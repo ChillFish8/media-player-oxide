@@ -1,14 +1,3 @@
-[package]
-name = "wgpu-player"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-thiserror = "2"
-
-rusty_ffmpeg = { version = "0.16.3+ffmpeg.7.1", features = ["ffmpeg7"] }
-
-
-[features]
-link-system-ffmpeg = ["rusty_ffmpeg/link_system_ffmpeg"]
-link-vcpkg-ffmpeg = ["rusty_ffmpeg/link_vcpkg_ffmpeg"]
+[workspace]
+resolver = "2"
+members = ["wgpu-player", "wgpu-player-demo"]
