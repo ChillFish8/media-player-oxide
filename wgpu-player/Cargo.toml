@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 thiserror = "2"
+url = "2.5"
 
 rusty_ffmpeg = { version = "0.16.3+ffmpeg.7.1", features = ["ffmpeg7"] }
 
 
 [features]
+# Dynamically link to the system ffmpeg headers and shared libraries.
 link-system-ffmpeg = ["rusty_ffmpeg/link_system_ffmpeg"]
+# Dynamically link to vcpkg ffmpeg headers and shared libraries.
 link-vcpkg-ffmpeg = ["rusty_ffmpeg/link_vcpkg_ffmpeg"]
