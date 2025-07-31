@@ -8,6 +8,8 @@ use std::time::Duration;
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::error;
+use crate::media::MediaType;
+use crate::stream::Stream;
 
 /// The input source is a media source containing video or audio or both.
 ///
@@ -81,7 +83,7 @@ impl InputSource {
     pub fn duration(&self) -> Duration {
         let ptr = self.ctx.as_ptr();
         let duration = unsafe { (*ptr).duration };
-        Duration::from_secs_f32((duration as f64 / ffmpeg::AV_TIME_BASE as f64) as f32)
+        Duration::from_secs_f32(duration as f32 / ffmpeg::AV_TIME_BASE as f32)
     }
 
     /// Returns a reference to the source's URL.
@@ -95,6 +97,30 @@ impl InputSource {
         unsafe { (*ptr).nb_streams as usize }
     }
 
+    /// Iterate over all available audio, video and subtitle streams in the source.
+    pub fn iter_streams(&self) -> impl Iterator<Item = Stream> {
+        let ptr = self.ctx.as_ptr();
+        let streams = unsafe {
+            std::slice::from_raw_parts(
+                (*ptr).streams,
+                self.num_streams()
+            )
+        };
+
+        streams
+            .iter()
+            .map(|v| {
+                unsafe { Stream::from_raw(*v) }
+            })
+            .filter(|stream| {
+                matches!(
+                    stream.media_type(),
+                    MediaType::Video
+                    | MediaType::Audio
+                    | MediaType::Subtitle
+                )
+            })
+    }
 
 }
 
@@ -111,14 +137,12 @@ impl Drop for InputSource {
 
 #[cfg(test)]
 mod tests {
-    use url::Url;
     use super::*;
 
     #[test]
     fn test_direct_file_open() {
         let source = InputSource::open_file("../media/test.mp4").unwrap();
-        println!("got source: {:?}", source);
-        println!("duration: {:?}", source.duration());
-        drop(source);
+        assert_eq!(source.num_streams(), 2);
+        assert_eq!(source.duration(), Duration::from_secs_f32(13.845000267));
     }
 }
