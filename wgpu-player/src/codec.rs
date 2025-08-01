@@ -16,7 +16,6 @@ use crate::{OutputPixelFormat, error};
 pub(crate) fn open_best_fitting_decoder(
     codec: *const ffmpeg::AVCodec,
     codec_params: *const ffmpeg::AVCodecParameters,
-    target_pixel_format: OutputPixelFormat,
     accelerator_config: &AcceleratorConfig,
 ) -> Result<VideoDecoder, error::FFmpegError> {
     for accelerator in accelerator_config.accelerators() {
@@ -36,19 +35,13 @@ pub(crate) fn open_best_fitting_decoder(
 
         tracing::debug!(accelerator = ?accelerator, "accelerator exists");
 
-        decoder.set_output_pixel_format(target_pixel_format);
         decoder.copy_codec_params(codec_params)?;
 
-        let result = decoder.open();
-        match result {
-            Ok(()) => return Ok(decoder),
-            Err(err) if err.errno() == ffmpeg::AVERROR_INVALIDDATA => continue,
-            Err(err) => return Err(err),
-        }
+        decoder.open()?;
+        return Ok(decoder);
     }
 
     let mut default_decoder = VideoDecoder::create(codec)?;
-    default_decoder.set_output_pixel_format(target_pixel_format);
     default_decoder.copy_codec_params(codec_params)?;
     default_decoder.open()?;
 
@@ -139,22 +132,6 @@ impl VideoDecoder {
         self.accelerator
     }
 
-    fn set_output_pixel_format(&mut self, format: OutputPixelFormat) {
-        tracing::debug!(format = ?format, "setting output pixel format");
-
-        let user_data = Box::new(UserData {
-            target_pix_fmt: format,
-        });
-
-        unsafe {
-            if !(*self.ctx).opaque.is_null() {
-                drop(Box::from_raw((*self.ctx).opaque as *mut UserData));
-            }
-            (*self.ctx).opaque = Box::into_raw(user_data).cast();
-            (*self.ctx).get_format = Some(select_target_pix_fmt);
-        }
-    }
-
     fn copy_codec_params(
         &mut self,
         params: *const ffmpeg::AVCodecParameters,
@@ -190,49 +167,8 @@ impl Drop for VideoDecoder {
             return;
         }
 
-        unsafe {
-            if !(*self.ctx).opaque.is_null() {
-                drop(Box::from_raw((*self.ctx).opaque as *mut UserData));
-            }
-            ffmpeg::avcodec_free_context(&raw mut self.ctx);
-        };
+        unsafe { ffmpeg::avcodec_free_context(&raw mut self.ctx) };
     }
-}
-
-struct UserData {
-    target_pix_fmt: OutputPixelFormat,
-}
-
-/// A callback triggered by FFmpeg when a decoder is opened, we use this
-/// to find out if it supports the pixel format we want to output, if it
-/// does, we tell it to use that, otherwise we return [ffmpeg::AV_PIX_FMT_NONE].
-extern "C" fn select_target_pix_fmt(
-    ctx: *mut ffmpeg::AVCodecContext,
-    mut pix_fmts: *const ffmpeg::AVPixelFormat,
-) -> ffmpeg::AVPixelFormat {
-    unsafe {
-        if (*ctx).opaque.is_null() {
-            return *pix_fmts;
-        }
-    };
-
-    let user_data = unsafe { &*((*ctx).opaque as *const UserData) };
-
-    loop {
-        let raw_pix_fmt = unsafe { *pix_fmts };
-        if raw_pix_fmt == ffmpeg::AV_PIX_FMT_NONE {
-            break;
-        }
-
-        let available_pix_fmt = OutputPixelFormat::try_from_av_pix_fmt(raw_pix_fmt);
-        if available_pix_fmt == Some(user_data.target_pix_fmt) {
-            return raw_pix_fmt;
-        }
-
-        pix_fmts = unsafe { pix_fmts.offset(1) };
-    }
-
-    ffmpeg::AV_PIX_FMT_NONE
 }
 
 fn format_codec_name_with_accelerator(
@@ -277,7 +213,6 @@ fn find_accelerator_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputPixelFormat;
     use crate::accelerator::AcceleratorConfig;
 
     #[test]
@@ -288,28 +223,18 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::h264_nv12(c"h264", OutputPixelFormat::Nv12)]
-    #[case::hevc_nv12(c"hevc", OutputPixelFormat::Nv12)]
-    #[case::av1_nv12(c"av1", OutputPixelFormat::Nv12)]
-    #[case::h264_rgba(c"h264", OutputPixelFormat::Rgba)]
-    #[case::hevc_rgba(c"hevc", OutputPixelFormat::Rgba)]
-    #[case::av1_rgba(c"av1", OutputPixelFormat::Rgba)]
-    #[case::h264_yuv(c"h264", OutputPixelFormat::Yuv420p10le)]
-    #[case::hevc_yuv(c"hevc", OutputPixelFormat::Yuv420p10le)]
-    #[case::av1_yuv(c"av1", OutputPixelFormat::Yuv420p10le)]
-    fn test_create_video_decoder(
-        #[case] codec_name: &std::ffi::CStr,
-        #[case] target_pix_fmt: OutputPixelFormat,
-    ) {
+    #[case::h264_nv12(c"h264")]
+    #[case::hevc_nv12(c"hevc")]
+    #[case::av1_nv12(c"av1")]
+    fn test_create_video_decoder(#[case] codec_name: &std::ffi::CStr) {
         let _ = tracing_subscriber::fmt::try_init();
 
         let codec = unsafe { ffmpeg::avcodec_find_decoder_by_name(codec_name.as_ptr()) };
         assert!(!codec.is_null());
 
         let config = AcceleratorConfig::default();
-        let video_decoder =
-            open_best_fitting_decoder(codec, ptr::null(), target_pix_fmt, &config)
-                .expect("accelerated codec creation failed");
+        let video_decoder = open_best_fitting_decoder(codec, ptr::null(), &config)
+            .expect("accelerated codec creation failed");
         assert!(video_decoder.is_open);
         drop(video_decoder);
     }

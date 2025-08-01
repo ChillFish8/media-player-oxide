@@ -64,6 +64,8 @@ impl InputSource {
         };
         error::convert_ff_result(result)?;
 
+        tracing::debug!(url = url.as_str(), "successfully opened input");
+
         if let Some(ctx) = ptr::NonNull::new(ctx) {
             let mut source = Self { url, ctx };
             source.init_source()?;
@@ -80,6 +82,7 @@ impl InputSource {
             ffmpeg::avformat_find_stream_info(self.ctx.as_ptr(), ptr::null_mut())
         };
         error::convert_ff_result(result)?;
+        tracing::debug!("initialised stream_info");
         Ok(())
     }
 
@@ -172,6 +175,7 @@ impl Drop for InputSource {
 mod tests {
     use super::*;
     use crate::stream::{FrameRate, Resolution};
+    use crate::{AcceleratorConfig, OutputPixelFormat};
 
     #[test]
     fn test_direct_file_open() {
@@ -246,5 +250,20 @@ mod tests {
             stream.is_none(),
             "no video stream should exist at user provided index"
         );
+    }
+
+    #[test]
+    fn test_opening_decoder() {
+        let source = InputSource::open_file("../media/test.mp4").unwrap();
+
+        let stream = source
+            .find_best_stream(MediaType::Video, None)
+            .expect("video stream exists with known decoder")
+            .expect("video stream exists");
+
+        let accelerator_config = AcceleratorConfig::default();
+        let decoder = stream
+            .open_decoder(&accelerator_config)
+            .expect("valid decoder should be found and opened");
     }
 }

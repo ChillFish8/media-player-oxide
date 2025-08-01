@@ -111,7 +111,6 @@ impl<'src> Stream<'src> {
     /// accelerator config and target pixel format.
     pub(crate) fn open_decoder(
         &self,
-        target_pixel_format: crate::OutputPixelFormat,
         accelerator_config: &AcceleratorConfig,
     ) -> Result<VideoDecoder, error::FFmpegError> {
         let codec_params = unsafe { (*self.ctx).codecpar };
@@ -124,12 +123,7 @@ impl<'src> Stream<'src> {
             ));
         }
 
-        codec::open_best_fitting_decoder(
-            stream_codec,
-            codec_params,
-            target_pixel_format,
-            accelerator_config,
-        )
+        codec::open_best_fitting_decoder(stream_codec, codec_params, accelerator_config)
     }
 }
 
