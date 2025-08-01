@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Formatter;
 use std::marker::PhantomData;
 
@@ -44,7 +45,10 @@ impl<'src> Stream<'src> {
     #[inline]
     /// Returns the frame rate of the stream.
     pub fn framerate(&self) -> FrameRate {
-        unsafe { FrameRate((*self.ctx).avg_frame_rate) }
+        unsafe {
+            let rate = (*self.ctx).avg_frame_rate;
+            FrameRate::new(rate.num as usize, rate.den as usize)
+        }
     }
 
     #[inline]
@@ -76,8 +80,22 @@ impl<'src> Stream<'src> {
             if bit_rate <= 0 {
                 None
             } else {
-                Some(bit_rate as usize)
+                Some(bit_rate as usize / 1_000)
             }
+        }
+    }
+
+    /// Returns the name of the media codec this stream uses.
+    pub fn codec_name(&self) -> Cow<str> {
+        unsafe {
+            let codec_params = (*self.ctx).codecpar;
+            let stream_codec = ffmpeg::avcodec_find_decoder((*codec_params).codec_id);
+            if stream_codec.is_null() {
+                return Cow::Borrowed("unknown");
+            }
+
+            let name = std::ffi::CStr::from_ptr((*stream_codec).name);
+            name.to_string_lossy()
         }
     }
 
@@ -119,7 +137,10 @@ impl<'src> Stream<'src> {
 /// The frame rate of a given stream.
 ///
 /// This is represented in the form of a numerator and a denominator.
-pub struct FrameRate(ffmpeg::AVRational);
+pub struct FrameRate {
+    numerator: usize,
+    denominator: usize,
+}
 
 impl std::fmt::Debug for FrameRate {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -134,22 +155,30 @@ impl std::fmt::Debug for FrameRate {
 }
 
 impl FrameRate {
+    /// Creates a new [FrameRate] using the given fractional components.
+    pub(crate) fn new(numerator: usize, denominator: usize) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+
     #[inline]
     /// Returns the rate in terms of frames per second as a f32 value.
     pub fn as_f32(&self) -> f32 {
-        self.0.num as f32 / self.0.den as f32
+        self.numerator as f32 / self.denominator as f32
     }
 
     #[inline]
     /// Returns the numerator part of the fraction.
     pub fn numerator(&self) -> usize {
-        self.0.num as usize
+        self.numerator
     }
 
     #[inline]
     /// Returns the denominator part of the fraction.
     pub fn denominator(&self) -> usize {
-        self.0.den as usize
+        self.denominator
     }
 }
 

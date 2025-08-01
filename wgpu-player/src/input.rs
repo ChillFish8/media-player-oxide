@@ -85,8 +85,8 @@ impl InputSource {
 
     /// Returns the duration of the source.
     pub fn duration(&self) -> Duration {
-        let ptr = self.ctx.as_ptr();
-        let duration = unsafe { (*ptr).duration };
+        let ctx = self.ctx.as_ptr();
+        let duration = unsafe { (*ctx).duration };
         Duration::from_secs_f32(duration as f32 / ffmpeg::AV_TIME_BASE as f32)
     }
 
@@ -97,15 +97,15 @@ impl InputSource {
 
     /// Returns the number of streams available from the source.
     pub fn num_streams(&self) -> usize {
-        let ptr = self.ctx.as_ptr();
-        unsafe { (*ptr).nb_streams as usize }
+        let ctx = self.ctx.as_ptr();
+        unsafe { (*ctx).nb_streams as usize }
     }
 
     /// Iterate over all available audio, video and subtitle streams in the source.
     pub fn iter_streams(&self) -> impl Iterator<Item = Stream> {
-        let ptr = self.ctx.as_ptr();
+        let ctx = self.ctx.as_ptr();
         let streams =
-            unsafe { std::slice::from_raw_parts((*ptr).streams, self.num_streams()) };
+            unsafe { std::slice::from_raw_parts((*ctx).streams, self.num_streams()) };
 
         streams
             .iter()
@@ -116,6 +116,45 @@ impl InputSource {
                     MediaType::Video | MediaType::Audio | MediaType::Subtitle
                 )
             })
+    }
+
+    /// Find the best stream for the given [MediaType].
+    ///
+    /// An optional `preferred_stream_index` can be provided
+    pub fn find_best_stream(
+        &self,
+        media_type: MediaType,
+        preferred_stream_index: Option<usize>,
+    ) -> crate::Result<Option<Stream>> {
+        let ctx = self.ctx.as_ptr();
+
+        let mut decoder = ptr::null();
+        let result = unsafe {
+            ffmpeg::av_find_best_stream(
+                ctx,
+                media_type.to_av_media_type(),
+                preferred_stream_index.map(|v| v as i32).unwrap_or(-1),
+                -1,
+                &raw mut decoder,
+                0,
+            )
+        };
+
+        let result = error::convert_ff_result(result);
+        let stream_index = match result {
+            Ok(index) => index as usize,
+            Err(err) if err.errno() == ffmpeg::AVERROR_STREAM_NOT_FOUND => {
+                return Ok(None);
+            },
+            Err(other) => return Err(other.into()),
+        };
+
+        let stream = unsafe {
+            let streams = std::slice::from_raw_parts((*ctx).streams, self.num_streams());
+            Stream::from_raw(streams[stream_index])
+        };
+
+        Ok(Some(stream))
     }
 }
 
@@ -132,11 +171,80 @@ impl Drop for InputSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::{FrameRate, Resolution};
 
     #[test]
     fn test_direct_file_open() {
         let source = InputSource::open_file("../media/test.mp4").unwrap();
         assert_eq!(source.num_streams(), 2);
         assert_eq!(source.duration(), Duration::from_secs_f32(13.845000267));
+    }
+
+    #[test]
+    fn test_iter_streams() {
+        let source = InputSource::open_file("../media/test.mp4").unwrap();
+        let streams = source.iter_streams();
+
+        let mut video_count = 0;
+        let mut audio_count = 0;
+        let mut subtitles_count = 0;
+        for stream in streams {
+            if stream.media_type() == MediaType::Video {
+                video_count += 1;
+            } else if stream.media_type() == MediaType::Audio {
+                audio_count += 1;
+            } else if stream.media_type() == MediaType::Subtitle {
+                subtitles_count += 1;
+            }
+        }
+
+        assert_eq!(video_count, 1);
+        assert_eq!(audio_count, 1);
+        assert_eq!(subtitles_count, 0);
+    }
+
+    #[test]
+    fn test_find_best_stream() {
+        let source = InputSource::open_file("../media/test.mp4").unwrap();
+
+        let stream = source
+            .find_best_stream(MediaType::Video, None)
+            .expect("video stream exists with known decoder")
+            .expect("video stream exists");
+        assert_eq!(stream.index(), 0);
+        assert_eq!(stream.codec_name(), "h264");
+        assert_eq!(stream.bitrate(), Some(5160));
+        assert_eq!(
+            stream.resolution(),
+            Some(Resolution {
+                width: 1920,
+                height: 1080
+            })
+        );
+        assert_eq!(stream.framerate(), FrameRate::new(25, 1));
+        assert_eq!(stream.media_type(), MediaType::Video);
+
+        let stream = source
+            .find_best_stream(MediaType::Audio, None)
+            .expect("audio stream exists with known decoder")
+            .expect("audio stream exists");
+        assert_eq!(stream.index(), 1);
+        assert_eq!(stream.codec_name(), "aac");
+        assert_eq!(stream.bitrate(), Some(253));
+        assert_eq!(stream.framerate(), FrameRate::new(0, 0));
+        assert_eq!(stream.media_type(), MediaType::Audio);
+
+        let stream = source
+            .find_best_stream(MediaType::Subtitle, None)
+            .expect("call should succeed despite no stream existing");
+        assert!(stream.is_none(), "no subtitle stream should exist");
+
+        let stream = source
+            .find_best_stream(MediaType::Video, Some(2))
+            .expect("call should succeed despite no stream existing");
+        assert!(
+            stream.is_none(),
+            "no video stream should exist at user provided index"
+        );
     }
 }

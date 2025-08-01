@@ -1,8 +1,4 @@
-use std::ptr;
-
 use rusty_ffmpeg::ffi as ffmpeg;
-
-use crate::{OutputPixelFormat, error};
 
 #[cfg(target_os = "linux")]
 /// The default accelerator affinity for a Linux based distribution.
