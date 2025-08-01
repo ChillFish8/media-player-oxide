@@ -30,7 +30,7 @@ Although this system is built on top of FFmpeg, a very mature and well-made set 
 is not as efficient as something like VLC or MPV when you have hardware decoding enabled, this is 
 because [currently](https://github.com/gfx-rs/wgpu/issues/3145) we cannot take frames rendered 
 by the hardware decoders (if available) and upload them to wgpu going a GPU <-> GPU copy or even no
-copies of the GPU memory at all. So for now we must do a GPU <-> CPU <-> GPU copy which causes
+copies of the GPU memory at all. So for now we must do a GPU -> CPU -> GPU copy which causes
 a certain amount of additional CPU overhead. That being said, this player was built with both systems
 in mind and should not bottleneck on a single CPU core doing all the copies. 
 I do plan on supporting the fast paths when available.
@@ -40,23 +40,23 @@ I do plan on supporting the fast paths when available.
 
 This project was mostly a test and a learning resource...
 
-Please be aware that this project is not really something I am planning to continue to maintain unless 
-I need to use it or update it myself, I have a lot of other commitments going on already and don't really
+Please be aware that this project is not really something I am planning to update with new features 
+unless I have a use for them, I have a lot of other commitments going on already and don't really
 have the time to keep this library constantly up to date or add new features.
 
 If someone dedicated or the community wants to take over the project and continue to improve it you have
-my blessing :) 
+my blessing :D
 
 ## Development
 
 This library dynamically links the libav* libraries, you can get a copy of them from the
 [FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) releases, just make sure to get the `shared` variants.
 
-By default, the system requires the `FFmpeg_INCLUDE_DIR` and `FFmpeg_PKG_CONFIG_PATH` set to compile,
+By default, the system requires the `FFMPEG_INCLUDE_DIR` and `FFMPEG_PKG_CONFIG_PATH` set to compile,
 if you are working on the library itself or this repo, you can drop one of the aforementioned releases
-into a `./FFmpeg` folder and the `.cargo/config.toml` is pre-configured to specify the required env vars.
+into a `./ffmpeg` folder and the `.cargo/config.toml` is pre-configured to specify the required env vars.
 
-You can also enable the `link-system-FFmpeg` or `link-vcpkg-FFmpeg` flag to link to the FFmpeg headers and libs available from the
+You can also enable the `link-system-ffmpeg` or `link-vcpkg-ffmpeg` flag to link to the FFmpeg headers and libs available from the
 system or vcpkg respectively.
 
 ## How it works

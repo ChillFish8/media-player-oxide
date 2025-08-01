@@ -1,4 +1,3 @@
-
 use rusty_ffmpeg::ffi as ffmpeg;
 
 /// A player result type alias.
@@ -32,22 +31,26 @@ impl FFmpegError {
         &self.msg
     }
 
-    /// Create a new error from the raw errno.
     pub(crate) fn from_raw_errno(errno: i32) -> Self {
         let msg = ffmpeg::av_err2str(errno);
         Self { errno, msg }
+    }
+
+    pub(crate) fn custom(msg: impl std::fmt::Display) -> Self {
+        Self {
+            errno: ffmpeg::AVERROR_UNKNOWN,
+            msg: msg.to_string(),
+        }
     }
 }
 
 impl std::fmt::Display for FFmpegError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FFmpeg Error ({}): {}", self.errno, self.msg)
+        write!(f, "FFmpeg Error ({:?}): {}", self.errno, self.msg)
     }
 }
 
 impl std::error::Error for FFmpegError {}
-
-
 
 #[inline]
 /// Converts a FFmpeg result code to a Rust result.

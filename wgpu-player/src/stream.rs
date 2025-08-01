@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::media::MediaType;
+use crate::accelerator::AcceleratorConfig;
+use crate::codec::VideoDecoder;
+use crate::{MediaType, codec, error};
 
 /// A single immutable audio, video or subtitle stream from an [InputSource](crate::InputSource).
 pub struct Stream<'src> {
@@ -63,7 +65,6 @@ impl<'src> Stream<'src> {
         Some(resolution)
     }
 
-
     /// Returns the bitrate of the stream in kilobits per second if available.
     ///
     /// Some containers like MKV might not make this available without probing the stream
@@ -87,8 +88,32 @@ impl<'src> Stream<'src> {
     pub(crate) fn as_ptr(&self) -> *const ffmpeg::AVStream {
         self.ctx
     }
-}
 
+    /// Attempt to get a video decoder for the stream using the given
+    /// accelerator config and target pixel format.
+    pub(crate) fn open_decoder(
+        &self,
+        target_pixel_format: crate::OutputPixelFormat,
+        accelerator_config: &AcceleratorConfig,
+    ) -> Result<VideoDecoder, error::FFmpegError> {
+        let codec_params = unsafe { (*self.ctx).codecpar };
+        let stream_codec =
+            unsafe { ffmpeg::avcodec_find_decoder((*codec_params).codec_id) };
+
+        if stream_codec.is_null() {
+            return Err(error::FFmpegError::from_raw_errno(
+                -ffmpeg::AVERROR_DECODER_NOT_FOUND,
+            ));
+        }
+
+        codec::open_best_fitting_decoder(
+            stream_codec,
+            codec_params,
+            target_pixel_format,
+            accelerator_config,
+        )
+    }
+}
 
 #[derive(Copy, Clone)]
 /// The frame rate of a given stream.
@@ -98,7 +123,13 @@ pub struct FrameRate(ffmpeg::AVRational);
 
 impl std::fmt::Debug for FrameRate {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FrameRate({}/{}, fps={:.2})", self.numerator(), self.denominator(), self.as_f32())
+        write!(
+            f,
+            "FrameRate({}/{}, fps={:.2})",
+            self.numerator(),
+            self.denominator(),
+            self.as_f32()
+        )
     }
 }
 
@@ -127,7 +158,7 @@ impl Eq for FrameRate {}
 impl PartialEq for FrameRate {
     fn eq(&self, other: &Self) -> bool {
         self.numerator() == other.numerator()
-        && self.denominator() == other.denominator()
+            && self.denominator() == other.denominator()
     }
 }
 

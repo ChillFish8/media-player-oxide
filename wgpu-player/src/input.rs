@@ -7,9 +7,8 @@ use std::time::Duration;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::error;
-use crate::media::MediaType;
 use crate::stream::Stream;
+use crate::{MediaType, error};
 
 /// The input source is a media source containing video or audio or both.
 ///
@@ -50,12 +49,13 @@ impl InputSource {
     /// This method can block for an arbitrary amount of time as FFmpeg reads the source,
     /// some things like HLS streams can take several seconds.
     pub fn open_url(url: url::Url) -> crate::Result<Self> {
-        let url_cstr = CString::from_str(url.as_str())
-            .expect("provided URL should never reasonably contain a null terminator mid string");
+        let url_cstr = CString::from_str(url.as_str()).expect(
+            "provided URL should never reasonably contain a null terminator mid string",
+        );
 
         let mut ctx = ptr::null_mut();
         let result = unsafe {
-             ffmpeg::avformat_open_input(
+            ffmpeg::avformat_open_input(
                 &raw mut ctx,
                 url_cstr.as_ptr(),
                 ptr::null_mut(),
@@ -69,12 +69,16 @@ impl InputSource {
             source.init_source()?;
             Ok(source)
         } else {
-            panic!("ffmpeg::avformat_open_input returned null after returning a successful result code");
+            panic!(
+                "ffmpeg::avformat_open_input returned null after returning a successful result code"
+            );
         }
     }
 
     fn init_source(&mut self) -> crate::Result<()> {
-        let result = unsafe { ffmpeg::avformat_find_stream_info(self.ctx.as_ptr(), ptr::null_mut()) };
+        let result = unsafe {
+            ffmpeg::avformat_find_stream_info(self.ctx.as_ptr(), ptr::null_mut())
+        };
         error::convert_ff_result(result)?;
         Ok(())
     }
@@ -100,28 +104,19 @@ impl InputSource {
     /// Iterate over all available audio, video and subtitle streams in the source.
     pub fn iter_streams(&self) -> impl Iterator<Item = Stream> {
         let ptr = self.ctx.as_ptr();
-        let streams = unsafe {
-            std::slice::from_raw_parts(
-                (*ptr).streams,
-                self.num_streams()
-            )
-        };
+        let streams =
+            unsafe { std::slice::from_raw_parts((*ptr).streams, self.num_streams()) };
 
         streams
             .iter()
-            .map(|v| {
-                unsafe { Stream::from_raw(*v) }
-            })
+            .map(|v| unsafe { Stream::from_raw(*v) })
             .filter(|stream| {
                 matches!(
                     stream.media_type(),
-                    MediaType::Video
-                    | MediaType::Audio
-                    | MediaType::Subtitle
+                    MediaType::Video | MediaType::Audio | MediaType::Subtitle
                 )
             })
     }
-
 }
 
 // SAFETY: We are allowed to call `avformat_free_context` from a different thread to
@@ -133,7 +128,6 @@ impl Drop for InputSource {
         unsafe { ffmpeg::avformat_free_context(self.ctx.as_ptr()) }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
