@@ -3,7 +3,7 @@ use std::ptr;
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::accelerator::{Accelerator, AcceleratorConfig};
-use crate::{OutputPixelFormat, error};
+use crate::error;
 
 /// Open the video decoder.
 ///
@@ -128,8 +128,54 @@ impl VideoDecoder {
         Ok(codec)
     }
 
+
     pub(crate) fn accelerator(&self) -> Option<Accelerator> {
         self.accelerator
+    }
+
+    pub(crate) fn hw_device_ctx(&self) -> *mut ffmpeg::AVBufferRef {
+        unsafe { (*self.ctx).hw_device_ctx }
+    }
+
+    pub(crate) fn hw_frame_ctx(&self) -> *mut ffmpeg::AVBufferRef {
+        unsafe { (*self.ctx).hw_frames_ctx }
+    }
+
+    fn pix_fmt(&self) -> ffmpeg::AVPixelFormat {
+        let accelerator = match self.accelerator() {
+            None => return unsafe { (*self.ctx).sw_pix_fmt },
+            Some(accelerator) => accelerator,
+        };
+
+        match accelerator {
+            Accelerator::Vaapi => ffmpeg::AV_PIX_FMT_VAAPI,
+            Accelerator::Vdpau => ffmpeg::AV_PIX_FMT_VDPAU,
+            Accelerator::Cuda => ffmpeg::AV_PIX_FMT_CUDA,
+            Accelerator::Qsv => ffmpeg::AV_PIX_FMT_QSV,
+            Accelerator::Vulkan => ffmpeg::AV_PIX_FMT_VULKAN,
+            Accelerator::Dxva2 => ffmpeg::AV_PIX_FMT_DXVA2_VLD,
+            Accelerator::D3D11 => ffmpeg::AV_PIX_FMT_D3D11,
+            Accelerator::D3D12 => ffmpeg::AV_PIX_FMT_D3D12,
+            Accelerator::VideoToolbox => ffmpeg::AV_PIX_FMT_VIDEOTOOLBOX,
+        }
+    }
+
+    pub(crate) fn filter_input_args(&self) -> std::ffi::CString {
+        use std::fmt::Write;
+        let ctx = unsafe { &*self.ctx };
+        let mut args = String::new();
+        write!(args, "width={}", ctx.width).unwrap();
+        write!(args, ":height={}", ctx.height).unwrap();
+        write!(args, ":pix_fmt={}", self.pix_fmt()).unwrap();
+        // TODO: This isn't technically correct, but I am not sure why this is needed or if it
+        //       is actually used at all?
+        write!(args, ":time_base={}/{}", ctx.framerate.den, ctx.framerate.num).unwrap();
+        write!(args, ":frame_rate={}/{}", ctx.framerate.num, ctx.framerate.den).unwrap();
+        write!(args, ":colorspace={}", ctx.colorspace).unwrap();
+        write!(args, ":range={}", ctx.color_range).unwrap();
+        write!(args, ":pixel_aspect={}/{}", ctx.sample_aspect_ratio.num, ctx.sample_aspect_ratio.den).unwrap();
+        tracing::debug!(args = ?args, "got filter args");
+        std::ffi::CString::new(args).unwrap()
     }
 
     fn copy_codec_params(
@@ -209,6 +255,7 @@ fn find_accelerator_config(
 
     ptr::null()
 }
+
 
 #[cfg(test)]
 mod tests {

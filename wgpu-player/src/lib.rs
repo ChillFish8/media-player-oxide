@@ -3,6 +3,7 @@ mod codec;
 mod error;
 mod input;
 mod stream;
+mod filter;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
@@ -79,24 +80,15 @@ pub enum OutputPixelFormat {
     ///
     /// This format is more bandwidth intensive than RGBA and NV12, high FPS videos can
     /// have significant compute costs.
-    Yuv420p10le,
+    P010le,
 }
 
 impl OutputPixelFormat {
-    pub(crate) fn to_av_pixel_format(&self) -> ffmpeg::AVPixelFormat {
+    pub(crate) fn to_filter_name(&self) -> &'static str {
         match self {
-            OutputPixelFormat::Nv12 => ffmpeg::AV_PIX_FMT_NV12,
-            OutputPixelFormat::Rgba => ffmpeg::AV_PIX_FMT_RGBA,
-            OutputPixelFormat::Yuv420p10le => ffmpeg::AV_PIX_FMT_YUV420P10LE,
-        }
-    }
-
-    pub(crate) fn try_from_av_pix_fmt(format: ffmpeg::AVPixelFormat) -> Option<Self> {
-        match format {
-            ffmpeg::AV_PIX_FMT_NV12 => Some(Self::Nv12),
-            ffmpeg::AV_PIX_FMT_RGBA => Some(Self::Rgba),
-            ffmpeg::AV_PIX_FMT_YUV420P10LE => Some(OutputPixelFormat::Yuv420p10le),
-            _ => None,
+            OutputPixelFormat::Nv12 => "nv12",
+            OutputPixelFormat::Rgba => "rgba",
+            OutputPixelFormat::P010le => "p010le",
         }
     }
 }

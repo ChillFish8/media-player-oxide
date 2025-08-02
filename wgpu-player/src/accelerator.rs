@@ -1,4 +1,5 @@
 use rusty_ffmpeg::ffi as ffmpeg;
+use crate::OutputPixelFormat;
 
 #[cfg(target_os = "linux")]
 /// The default accelerator affinity for a Linux based distribution.
@@ -134,6 +135,40 @@ impl Accelerator {
             Accelerator::D3D11 => "d3d11",
             Accelerator::D3D12 => "d3d12",
             Accelerator::VideoToolbox => "videotoolbox",
+        }
+    }
+
+    pub(crate) fn build_filter_graph(&self, target_pix_fmt: OutputPixelFormat) -> String {
+        match self {
+            Accelerator::Vaapi => format!(
+                "scale_vaapi=format={fmt},hwdownload,format={fmt}",
+                fmt = target_pix_fmt.to_filter_name()
+            ),
+            // Cuda only supports p010le native conversion if the output format is alrady
+            // p010le, at which point the software filter will be bypassed anyway.
+            Accelerator::Cuda if target_pix_fmt == OutputPixelFormat::P010le => {
+                 "hwdownload,format=p010le".to_string()
+            },
+            Accelerator::Cuda => format!(
+                "scale_cuda=format={fmt},hwdownload,format={fmt}",
+                fmt = target_pix_fmt.to_filter_name()
+            ),
+            Accelerator::Qsv if target_pix_fmt == OutputPixelFormat::Nv12 => {
+                "scale_qsv=format=nv12,hwdownload,format=nv12".to_string()
+            },
+            Accelerator::Qsv => format!(
+                "hwdownload,format={fmt}",
+                fmt = target_pix_fmt.to_filter_name()
+            ),
+            Accelerator::Vulkan
+            | Accelerator::Vdpau
+            | Accelerator::Dxva2
+            | Accelerator::D3D11
+            | Accelerator::D3D12
+            | Accelerator::VideoToolbox => format!(
+                "hwdownload,format={fmt}",
+                fmt = target_pix_fmt.to_filter_name()
+            ),
         }
     }
 }

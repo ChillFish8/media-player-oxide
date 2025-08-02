@@ -17,12 +17,12 @@ end user, note we still depend on wgpu for some reason I mention further down.
     ingest from.
 - Hardware accelerator support like VAAPI, CUDA, VULKAN, etc... The affinity the player has for
   each accelerator can be configured.
-- Decoding to `nv12`, `p010le` (`yuv420p10le`) or `rgba`.
+- Decoding to `nv12` or `rgba`.
   * Please be aware that you need hardware capable of decoding videos fast enough, both `rgba` and `yuv420p10le`
     are much heavier than `nv12` and if your GPU doesn't support `nv12` then it probably cannot handle `rgba` or
     `yuv420p10le` conversion.
-  * `yuv420p10le` is normally the HDR10 / Dolby Vision formats but be aware wgpu currently does not support HDR
-    as far as I am aware, so you would need to bring your own renderer.
+  * `yuv420p10le` is normally the HDR10 / Dolby Vision formats but be aware you may need to conver this into 
+    a texture format wgpu actually supports for HDR. I recommend doing this as a wgpu shader directly.
 
 ## Efficiency
 
