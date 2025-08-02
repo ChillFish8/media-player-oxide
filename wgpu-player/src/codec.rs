@@ -86,7 +86,7 @@ fn create_accelerated_decoder(
             );
             error::convert_ff_result(result)?;
 
-            (*codec.ctx).hw_device_ctx = hw_device;
+            (*codec.ctx).hw_device_ctx = ffmpeg::av_buffer_ref(hw_device);
         };
 
         codec.accelerator = Some(target_accelerator);
@@ -128,7 +128,6 @@ impl VideoDecoder {
         Ok(codec)
     }
 
-
     pub(crate) fn accelerator(&self) -> Option<Accelerator> {
         self.accelerator
     }
@@ -169,11 +168,26 @@ impl VideoDecoder {
         write!(args, ":pix_fmt={}", self.pix_fmt()).unwrap();
         // TODO: This isn't technically correct, but I am not sure why this is needed or if it
         //       is actually used at all?
-        write!(args, ":time_base={}/{}", ctx.framerate.den, ctx.framerate.num).unwrap();
-        write!(args, ":frame_rate={}/{}", ctx.framerate.num, ctx.framerate.den).unwrap();
+        write!(
+            args,
+            ":time_base={}/{}",
+            ctx.framerate.den, ctx.framerate.num
+        )
+        .unwrap();
+        write!(
+            args,
+            ":frame_rate={}/{}",
+            ctx.framerate.num, ctx.framerate.den
+        )
+        .unwrap();
         write!(args, ":colorspace={}", ctx.colorspace).unwrap();
         write!(args, ":range={}", ctx.color_range).unwrap();
-        write!(args, ":pixel_aspect={}/{}", ctx.sample_aspect_ratio.num, ctx.sample_aspect_ratio.den).unwrap();
+        write!(
+            args,
+            ":pixel_aspect={}/{}",
+            ctx.sample_aspect_ratio.num, ctx.sample_aspect_ratio.den
+        )
+        .unwrap();
         tracing::debug!(args = ?args, "got filter args");
         std::ffi::CString::new(args).unwrap()
     }
@@ -195,6 +209,12 @@ impl VideoDecoder {
         // Open should never normally be called twice.
         if self.is_open {
             panic!("codec is already open");
+        }
+
+        if let Some(accelerator) = self.accelerator() {
+            unsafe {
+                (*self.ctx).get_format = Some(accelerator.to_pixel_format_callback())
+            };
         }
 
         let result =
@@ -255,7 +275,6 @@ fn find_accelerator_config(
 
     ptr::null()
 }
-
 
 #[cfg(test)]
 mod tests {

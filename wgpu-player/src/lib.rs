@@ -1,9 +1,9 @@
 mod accelerator;
 mod codec;
 mod error;
+mod filter;
 mod input;
 mod stream;
-mod filter;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 

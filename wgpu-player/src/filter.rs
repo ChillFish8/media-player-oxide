@@ -1,9 +1,10 @@
 use std::ffi::CString;
 use std::ptr;
+
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::{error, OutputPixelFormat};
 use crate::codec::VideoDecoder;
+use crate::{OutputPixelFormat, error};
 
 /// Creates the video decoder filter pipeline.
 ///
@@ -18,7 +19,6 @@ pub(crate) fn create_filter_pipeline(
     let pipeline = VideoFilterPipeline::new()?;
     let mut inputs = ptr::null_mut();
     let mut outputs = ptr::null_mut();
-
 
     let mut buffer_src_ctx: *mut ffmpeg::AVFilterContext = ptr::null_mut();
     let mut buffer_sink_ctx: *mut ffmpeg::AVFilterContext = ptr::null_mut();
@@ -77,7 +77,7 @@ pub(crate) fn create_filter_pipeline(
         tracing::debug!("parsed filter graph");
 
         let mut o = outputs;
-        while !o.is_null()  {
+        while !o.is_null() {
             let filter_out = &*o;
             ffmpeg::avfilter_link(
                 filter_out.filter_ctx,
@@ -92,12 +92,7 @@ pub(crate) fn create_filter_pipeline(
         let mut i = inputs;
         while !i.is_null() {
             let inp = &*i;
-            ffmpeg::avfilter_link(
-                buffer_src_ctx,
-                0,
-                inp.filter_ctx,
-                inp.pad_idx as u32,
-            );
+            ffmpeg::avfilter_link(buffer_src_ctx, 0, inp.filter_ctx, inp.pad_idx as u32);
             i = inp.next;
         }
         tracing::debug!("linked outputs");
@@ -118,7 +113,8 @@ pub(crate) fn create_filter_pipeline(
         }
         tracing::debug!("attached hardware context");
 
-        let result = ffmpeg::avfilter_graph_config(pipeline.filter_graph, ptr::null_mut());
+        let result =
+            ffmpeg::avfilter_graph_config(pipeline.filter_graph, ptr::null_mut());
         error::convert_ff_result(result)?;
     };
 
@@ -140,12 +136,13 @@ impl VideoFilterPipeline {
     fn new() -> Result<Self, error::FFmpegError> {
         let filter_graph = unsafe { ffmpeg::avfilter_graph_alloc() };
         if filter_graph.is_null() {
-            Err(error::FFmpegError::custom("failed to allocate filter graph"))
+            Err(error::FFmpegError::custom(
+                "failed to allocate filter graph",
+            ))
         } else {
             Ok(Self { filter_graph })
         }
     }
-
 }
 
 impl Drop for VideoFilterPipeline {
@@ -156,12 +153,10 @@ impl Drop for VideoFilterPipeline {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
-    use crate::{AcceleratorConfig, InputSource, MediaType};
     use super::*;
+    use crate::{AcceleratorConfig, InputSource, MediaType};
 
     #[test]
     fn test_video_filter_construction() {
@@ -175,10 +170,9 @@ mod tests {
             .unwrap();
 
         let accelerator_config = AcceleratorConfig::default();
-        let decoder = stream.open_decoder(&accelerator_config).unwrap();
+        let mut decoder = stream.open_decoder(&accelerator_config).unwrap();
 
         let pipeline = create_filter_pipeline(&decoder, OutputPixelFormat::Nv12)
             .expect("filter should be created successfully");
-
     }
 }

@@ -1,4 +1,5 @@
 use rusty_ffmpeg::ffi as ffmpeg;
+
 use crate::OutputPixelFormat;
 
 #[cfg(target_os = "linux")]
@@ -138,7 +139,10 @@ impl Accelerator {
         }
     }
 
-    pub(crate) fn build_filter_graph(&self, target_pix_fmt: OutputPixelFormat) -> String {
+    pub(crate) fn build_filter_graph(
+        &self,
+        target_pix_fmt: OutputPixelFormat,
+    ) -> String {
         match self {
             Accelerator::Vaapi => format!(
                 "scale_vaapi=format={fmt},hwdownload,format={fmt}",
@@ -147,7 +151,7 @@ impl Accelerator {
             // Cuda only supports p010le native conversion if the output format is alrady
             // p010le, at which point the software filter will be bypassed anyway.
             Accelerator::Cuda if target_pix_fmt == OutputPixelFormat::P010le => {
-                 "hwdownload,format=p010le".to_string()
+                "hwdownload,format=p010le".to_string()
             },
             Accelerator::Cuda => format!(
                 "scale_cuda=format={fmt},hwdownload,format={fmt}",
@@ -169,6 +173,25 @@ impl Accelerator {
                 "hwdownload,format={fmt}",
                 fmt = target_pix_fmt.to_filter_name()
             ),
+        }
+    }
+
+    pub(crate) fn to_pixel_format_callback(
+        &self,
+    ) -> extern "C" fn(
+        *mut ffmpeg::AVCodecContext,
+        *const ffmpeg::AVPixelFormat,
+    ) -> ffmpeg::AVPixelFormat {
+        match self {
+            Accelerator::Vaapi => select_vaapi_pix_fmt,
+            Accelerator::Vdpau => select_vdpau_pix_fmt,
+            Accelerator::Cuda => select_cuda_pix_fmt,
+            Accelerator::Qsv => select_qsv_pix_fmt,
+            Accelerator::Vulkan => select_vulkan_pix_fmt,
+            Accelerator::Dxva2 => select_dxva2_pix_fmt,
+            Accelerator::D3D11 => select_d3d11_pix_fmt,
+            Accelerator::D3D12 => select_d3d12_pix_fmt,
+            Accelerator::VideoToolbox => select_videotoolbox_pix_fmt,
         }
     }
 }
@@ -250,3 +273,35 @@ impl AcceleratorConfig {
         self.target_device = Some(device_owned);
     }
 }
+
+macro_rules! define_pix_fmt_selector {
+    ($name:ident, $target:expr) => {
+        extern "C" fn $name(
+            _ctx: *mut ffmpeg::AVCodecContext,
+            mut pix_fmts: *const ffmpeg::AVPixelFormat,
+        ) -> ffmpeg::AVPixelFormat {
+            loop {
+                let raw_pix_fmt = unsafe { *pix_fmts };
+                if raw_pix_fmt == ffmpeg::AV_PIX_FMT_NONE {
+                    break;
+                } else if raw_pix_fmt == $target {
+                    return raw_pix_fmt;
+                }
+
+                pix_fmts = unsafe { pix_fmts.offset(1) };
+            }
+
+            ffmpeg::AV_PIX_FMT_NONE
+        }
+    };
+}
+
+define_pix_fmt_selector!(select_vaapi_pix_fmt, ffmpeg::AV_PIX_FMT_VAAPI);
+define_pix_fmt_selector!(select_vdpau_pix_fmt, ffmpeg::AV_PIX_FMT_VDPAU);
+define_pix_fmt_selector!(select_cuda_pix_fmt, ffmpeg::AV_PIX_FMT_CUDA);
+define_pix_fmt_selector!(select_qsv_pix_fmt, ffmpeg::AV_PIX_FMT_QSV);
+define_pix_fmt_selector!(select_vulkan_pix_fmt, ffmpeg::AV_PIX_FMT_VULKAN);
+define_pix_fmt_selector!(select_dxva2_pix_fmt, ffmpeg::AV_PIX_FMT_DXVA2_VLD);
+define_pix_fmt_selector!(select_d3d11_pix_fmt, ffmpeg::AV_PIX_FMT_D3D11);
+define_pix_fmt_selector!(select_d3d12_pix_fmt, ffmpeg::AV_PIX_FMT_D3D12);
+define_pix_fmt_selector!(select_videotoolbox_pix_fmt, ffmpeg::AV_PIX_FMT_VIDEOTOOLBOX);
