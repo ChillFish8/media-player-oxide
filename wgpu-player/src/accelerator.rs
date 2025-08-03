@@ -277,7 +277,7 @@ impl AcceleratorConfig {
 macro_rules! define_pix_fmt_selector {
     ($name:ident, $target:expr) => {
         extern "C" fn $name(
-            _ctx: *mut ffmpeg::AVCodecContext,
+            ctx: *mut ffmpeg::AVCodecContext,
             mut pix_fmts: *const ffmpeg::AVPixelFormat,
         ) -> ffmpeg::AVPixelFormat {
             loop {

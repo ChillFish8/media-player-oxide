@@ -1,129 +1,75 @@
-use std::borrow::Cow;
 use std::fmt::Formatter;
-use std::marker::PhantomData;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::accelerator::AcceleratorConfig;
-use crate::codec::VideoDecoder;
-use crate::{MediaType, codec, error};
+use crate::MediaType;
 
 /// A single immutable audio, video or subtitle stream from an [InputSource](crate::InputSource).
-pub struct Stream<'src> {
-    ctx: *const ffmpeg::AVStream,
-    phantom: PhantomData<&'src ()>,
-}
-
-impl<'src> Stream<'src> {
-    /// Creates a new [Stream] using the given raw pointer.
-    ///
-    /// The provided pointer must not be null and must live as long as `'src`.
-    pub(crate) unsafe fn from_raw(ctx: *const ffmpeg::AVStream) -> Self {
-        assert!(!ctx.is_null());
-        Self {
-            ctx,
-            phantom: PhantomData,
-        }
-    }
-
-    #[inline]
+pub struct StreamInfo {
     /// The media type of the stream.
-    pub fn media_type(&self) -> MediaType {
-        unsafe {
-            let codec_params = (*self.ctx).codecpar;
-            let media_type_raw = (*codec_params).codec_type;
-            MediaType::from(media_type_raw)
-        }
-    }
-
-    #[inline]
+    pub media_type: MediaType,
     /// Returns the index position of the stream.
-    pub fn index(&self) -> usize {
-        unsafe { (*self.ctx).index as usize }
-    }
-
-    #[inline]
+    pub index: usize,
     /// Returns the frame rate of the stream.
-    pub fn framerate(&self) -> FrameRate {
-        unsafe {
-            let rate = (*self.ctx).avg_frame_rate;
-            FrameRate::new(rate.num as usize, rate.den as usize)
-        }
-    }
-
-    #[inline]
+    pub framerate: FrameRate,
     /// Returns the resolution of the stream, providing it is a
     /// video stream.
-    pub fn resolution(&self) -> Option<Resolution> {
-        if self.media_type() != MediaType::Video {
-            return None;
-        }
-
-        let mut resolution = Resolution::default();
-        unsafe {
-            let codec_params = (*self.ctx).codecpar;
-            resolution.width = (*codec_params).width as usize;
-            resolution.height = (*codec_params).height as usize;
-        }
-
-        Some(resolution)
-    }
-
+    pub resolution: Option<Resolution>,
     /// Returns the bitrate of the stream in kilobits per second if available.
     ///
     /// Some containers like MKV might not make this available without probing the stream
     /// and estimating the bitrate which this method does not provide.
-    pub fn bitrate(&self) -> Option<usize> {
-        unsafe {
-            let codec_params = (*self.ctx).codecpar;
-            let bit_rate = (*codec_params).bit_rate;
-            if bit_rate <= 0 {
-                None
-            } else {
-                Some(bit_rate as usize / 1_000)
-            }
-        }
-    }
-
+    pub bitrate: Option<usize>,
     /// Returns the name of the media codec this stream uses.
-    pub fn codec_name(&self) -> Cow<str> {
-        unsafe {
-            let codec_params = (*self.ctx).codecpar;
-            let stream_codec = ffmpeg::avcodec_find_decoder((*codec_params).codec_id);
-            if stream_codec.is_null() {
-                return Cow::Borrowed("unknown");
-            }
+    pub codec_name: String,
+}
 
-            let name = std::ffi::CStr::from_ptr((*stream_codec).name);
-            name.to_string_lossy()
+impl StreamInfo {
+    /// Creates a new [StreamInfo] using the given raw pointer.
+    pub(crate) unsafe fn from_raw(ctx: *const ffmpeg::AVStream) -> Self {
+        assert!(!ctx.is_null());
+
+        let stream = unsafe { &*ctx };
+        let codec_params = unsafe { &*stream.codecpar };
+
+        let media_type = MediaType::from(codec_params.codec_type);
+        let index = stream.index as usize;
+        let framerate = FrameRate::new(
+            stream.avg_frame_rate.num as usize,
+            stream.avg_frame_rate.den as usize,
+        );
+
+        let mut resolution = None;
+        if media_type == MediaType::Video {
+            resolution = Some(Resolution {
+                width: codec_params.width as usize,
+                height: codec_params.height as usize,
+            });
         }
-    }
 
-    #[inline]
-    /// Returns the raw pointer this stream contains.
-    ///
-    /// WARNING: The lifetime os this pointer is tied directly to `'src`.
-    pub(crate) fn as_ptr(&self) -> *const ffmpeg::AVStream {
-        self.ctx
-    }
+        let mut bitrate = None;
+        if codec_params.bit_rate > 0 {
+            bitrate = Some(codec_params.bit_rate as usize);
+        }
 
-    /// Attempt to get a video decoder for the stream using the given
-    /// accelerator config and target pixel format.
-    pub(crate) fn open_decoder(
-        &self,
-        accelerator_config: &AcceleratorConfig,
-    ) -> Result<VideoDecoder, error::FFmpegError> {
-        let codec_params = unsafe { (*self.ctx).codecpar };
         let stream_codec =
             unsafe { ffmpeg::avcodec_find_decoder((*codec_params).codec_id) };
+        let codec_name = if stream_codec.is_null() {
+            "unknown".to_string()
+        } else {
+            let raw_name = unsafe { std::ffi::CStr::from_ptr((*stream_codec).name) };
+            let str_view = raw_name.to_string_lossy();
+            str_view.to_string()
+        };
 
-        if stream_codec.is_null() {
-            return Err(error::FFmpegError::from_raw_errno(
-                -ffmpeg::AVERROR_DECODER_NOT_FOUND,
-            ));
+        Self {
+            media_type,
+            index,
+            framerate,
+            resolution,
+            bitrate,
+            codec_name,
         }
-
-        codec::open_best_fitting_decoder(stream_codec, codec_params, accelerator_config)
     }
 }
 

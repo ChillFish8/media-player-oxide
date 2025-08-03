@@ -225,6 +225,30 @@ impl VideoDecoder {
 
         Ok(())
     }
+
+    pub(crate) fn decode(
+        &mut self,
+        packet: &mut ffmpeg::AVPacket,
+    ) -> Result<(), error::FFmpegError> {
+        unsafe {
+            let mut frame = ffmpeg::av_frame_alloc();
+
+            let result = ffmpeg::avcodec_send_packet(self.ctx, packet);
+            error::convert_ff_result(result)?;
+
+            loop {
+                let result = ffmpeg::avcodec_receive_frame(self.ctx, frame);
+                if result == ffmpeg::AVERROR_EOF || result == -(ffmpeg::EAGAIN as i32) {
+                    ffmpeg::av_frame_free(&raw mut frame);
+                    return Ok(());
+                }
+                error::convert_ff_result(result)?;
+
+                dbg!((*(*frame).hw_frames_ctx).data);
+                dbg!((*(*self.ctx).hw_frames_ctx).data);
+            }
+        }
+    }
 }
 
 impl Drop for VideoDecoder {
