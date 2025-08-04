@@ -63,6 +63,20 @@ pub(crate) trait Decoder: Sized {
 
     /// Open and initialise the decoder.
     fn open(&mut self) -> Result<(), error::FFmpegError>;
+
+    /// Push packet data into the decoder.
+    fn write_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), packet) };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
+
+    /// Attempt to decode a new frame and write it to the provided [ffmpeg::AVFrame].
+    fn decode(&mut self, frame: &mut ffmpeg::AVFrame) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), frame) };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
 }
 
 /// A wrapper around a [ffmpeg::AVCodec] and context.
