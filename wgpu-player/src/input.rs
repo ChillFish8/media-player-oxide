@@ -86,11 +86,14 @@ impl InputSource {
         Ok(())
     }
 
+    fn as_ctx(&self) -> &ffmpeg::AVFormatContext {
+        unsafe { &*(self.ctx.as_ptr()) }
+    }
+
     /// Returns the duration of the source.
     pub fn duration(&self) -> Duration {
-        let ctx = self.ctx.as_ptr();
-        let duration = unsafe { (*ctx).duration };
-        Duration::from_secs_f32(duration as f32 / ffmpeg::AV_TIME_BASE as f32)
+        let ctx = self.as_ctx();
+        Duration::from_secs_f32(ctx.duration as f32 / ffmpeg::AV_TIME_BASE as f32)
     }
 
     /// Returns a reference to the source's URL.
@@ -100,15 +103,15 @@ impl InputSource {
 
     /// Returns the number of streams available from the source.
     pub fn num_streams(&self) -> usize {
-        let ctx = self.ctx.as_ptr();
-        unsafe { (*ctx).nb_streams as usize }
+        let ctx = self.as_ctx();
+        ctx.nb_streams as usize
     }
 
     /// Iterate over all available audio, video and subtitle streams in the source.
     pub fn iter_streams(&self) -> impl Iterator<Item = StreamInfo> {
-        let ctx = self.ctx.as_ptr();
+        let ctx = self.as_ctx();
         let streams =
-            unsafe { std::slice::from_raw_parts((*ctx).streams, self.num_streams()) };
+            unsafe { std::slice::from_raw_parts(ctx.streams, self.num_streams()) };
 
         streams
             .iter()
@@ -125,9 +128,9 @@ impl InputSource {
     pub fn stream(&self, index: usize) -> StreamInfo {
         assert!(index < self.num_streams(), "stream index out of bounds");
 
-        let ctx = self.ctx.as_ptr();
+        let ctx = self.as_ctx();
         unsafe {
-            let streams = std::slice::from_raw_parts((*ctx).streams, self.num_streams());
+            let streams = std::slice::from_raw_parts(ctx.streams, self.num_streams());
             StreamInfo::from_raw(streams[index])
         }
     }
@@ -140,12 +143,10 @@ impl InputSource {
         media_type: MediaType,
         preferred_stream_index: Option<usize>,
     ) -> crate::Result<Option<StreamInfo>> {
-        let ctx = self.ctx.as_ptr();
-
         let mut decoder = ptr::null();
         let result = unsafe {
             ffmpeg::av_find_best_stream(
-                ctx,
+                self.ctx.as_ptr(),
                 media_type.to_av_media_type(),
                 preferred_stream_index.map(|v| v as i32).unwrap_or(-1),
                 -1,
@@ -163,8 +164,9 @@ impl InputSource {
             Err(other) => return Err(other.into()),
         };
 
+        let ctx = self.as_ctx();
         let stream = unsafe {
-            let streams = std::slice::from_raw_parts((*ctx).streams, self.num_streams());
+            let streams = std::slice::from_raw_parts(ctx.streams, self.num_streams());
             StreamInfo::from_raw(streams[stream_index])
         };
 
