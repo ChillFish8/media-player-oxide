@@ -101,7 +101,7 @@ impl InputSource {
     }
 
     fn streams_mut(&mut self) -> &mut [*mut ffmpeg::AVStream] {
-        let ctx = self.as_ctx();
+        let ctx = self.as_mut_ctx();
         unsafe { std::slice::from_raw_parts_mut(ctx.streams, self.num_streams()) }
     }
 
@@ -228,7 +228,7 @@ impl InputSource {
         }
     }
 
-    pub(crate) fn seek(&mut self, position: Duration) -> crate::Result<()> {
+    pub(crate) fn seek(&mut self, position: Duration) -> Result<(), error::FFmpegError> {
         let pos_ts = (position.as_secs_f32() * ffmpeg::AV_TIME_BASE as f32) as i64;
         let pos_min_ts = pos_ts + (5 * ffmpeg::AV_TIME_BASE as i64);
         let pos_max_ts = pos_ts + (5 * ffmpeg::AV_TIME_BASE as i64);
@@ -246,14 +246,20 @@ impl InputSource {
         Ok(())
     }
 
-    pub(crate) fn play(&mut self) -> crate::Result<()> {
+    pub(crate) fn play(&mut self) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::av_read_play(self.ctx.as_ptr()) };
         error::convert_ff_result(result)?;
         Ok(())
     }
 
-    pub(crate) fn pause(&mut self) -> crate::Result<()> {
+    pub(crate) fn pause(&mut self) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::av_read_pause(self.ctx.as_ptr()) };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
+
+    pub(crate) fn read_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::av_read_frame(self.ctx.as_ptr(), packet) };
         error::convert_ff_result(result)?;
         Ok(())
     }
