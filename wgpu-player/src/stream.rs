@@ -22,6 +22,7 @@ pub struct StreamInfo {
     pub bitrate: Option<usize>,
     /// Returns the name of the media codec this stream uses.
     pub codec_name: String,
+    pub(crate) codec_id: ffmpeg::AVCodecID,
 }
 
 impl StreamInfo {
@@ -53,7 +54,7 @@ impl StreamInfo {
         }
 
         let stream_codec =
-            unsafe { ffmpeg::avcodec_find_decoder((*codec_params).codec_id) };
+            unsafe { ffmpeg::avcodec_find_decoder(codec_params.codec_id) };
         let codec_name = if stream_codec.is_null() {
             "unknown".to_string()
         } else {
@@ -69,6 +70,7 @@ impl StreamInfo {
             resolution,
             bitrate,
             codec_name,
+            codec_id: codec_params.codec_id,
         }
     }
 }

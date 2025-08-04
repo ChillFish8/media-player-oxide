@@ -121,6 +121,17 @@ impl InputSource {
             })
     }
 
+    /// Attempts to return the stream info at the given index.
+    pub fn stream(&self, index: usize) -> StreamInfo {
+        assert!(index < self.num_streams(), "stream index out of bounds");
+
+        let ctx = self.ctx.as_ptr();
+        unsafe {
+            let streams = std::slice::from_raw_parts((*ctx).streams, self.num_streams());
+            StreamInfo::from_raw(streams[index])
+        }
+    }
+
     /// Find the best stream for the given [MediaType].
     ///
     /// An optional `preferred_stream_index` can be provided
@@ -158,6 +169,36 @@ impl InputSource {
         };
 
         Ok(Some(stream))
+    }
+
+    pub(crate) fn seek(&mut self, position: Duration) -> crate::Result<()> {
+        let pos_ts = (position.as_secs_f32() * ffmpeg::AV_TIME_BASE as f32) as i64;
+        let pos_min_ts = pos_ts + (5 * ffmpeg::AV_TIME_BASE as i64);
+        let pos_max_ts = pos_ts + (5 * ffmpeg::AV_TIME_BASE as i64);
+        let result = unsafe {
+            ffmpeg::avformat_seek_file(
+                self.ctx.as_ptr(),
+                -1,
+                pos_min_ts,
+                pos_ts,
+                pos_max_ts,
+                0,
+            )
+        };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
+
+    pub(crate) fn play(&mut self) -> crate::Result<()> {
+        let result = unsafe { ffmpeg::av_read_play(self.ctx.as_ptr()) };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
+
+    pub(crate) fn pause(&mut self) -> crate::Result<()> {
+        let result = unsafe { ffmpeg::av_read_pause(self.ctx.as_ptr()) };
+        error::convert_ff_result(result)?;
+        Ok(())
     }
 }
 

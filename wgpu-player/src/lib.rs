@@ -3,6 +3,7 @@ mod codec;
 mod error;
 // mod filter;
 mod input;
+mod player;
 mod stream;
 
 use rusty_ffmpeg::ffi as ffmpeg;
@@ -10,6 +11,7 @@ use rusty_ffmpeg::ffi as ffmpeg;
 pub use self::accelerator::{Accelerator, AcceleratorConfig};
 pub use self::error::{FFmpegError, PlayerError, Result};
 pub use self::input::InputSource;
+pub use self::player::{DecodedFrame, MediaPlayer, MediaPlayerBuilder};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MediaType {
