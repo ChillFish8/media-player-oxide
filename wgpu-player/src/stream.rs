@@ -2,6 +2,7 @@ use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::MediaType;
 
+#[derive(Clone)]
 /// A single immutable audio, video or subtitle stream from an [InputSource](crate::InputSource).
 pub struct StreamInfo {
     /// The media type of the stream.
