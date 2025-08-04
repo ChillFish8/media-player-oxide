@@ -1,5 +1,3 @@
-use std::fmt::Formatter;
-
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::MediaType;
@@ -23,6 +21,19 @@ pub struct StreamInfo {
     /// Returns the name of the media codec this stream uses.
     pub codec_name: String,
     pub(crate) codec_id: ffmpeg::AVCodecID,
+}
+
+impl std::fmt::Debug for StreamInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamInfo")
+            .field("media_type", &self.media_type)
+            .field("index", &self.index)
+            .field("framerate", &self.framerate)
+            .field("resolution", &self.resolution)
+            .field("bitrate", &self.bitrate)
+            .field("codec_name", &self.codec_name)
+            .finish()
+    }
 }
 
 impl StreamInfo {
@@ -53,14 +64,13 @@ impl StreamInfo {
             bitrate = Some(codec_params.bit_rate as usize);
         }
 
-        let stream_codec =
-            unsafe { ffmpeg::avcodec_find_decoder(codec_params.codec_id) };
-        let codec_name = if stream_codec.is_null() {
-            "unknown".to_string()
-        } else {
-            let raw_name = unsafe { std::ffi::CStr::from_ptr((*stream_codec).name) };
+        let stream_codec = crate::codec::find_decoder_by_id(codec_params.codec_id);
+        let codec_name = if let Some(codec) = stream_codec {
+            let raw_name = unsafe { std::ffi::CStr::from_ptr(codec.name) };
             let str_view = raw_name.to_string_lossy();
             str_view.to_string()
+        } else {
+            "unknown".to_string()
         };
 
         Self {
@@ -72,6 +82,11 @@ impl StreamInfo {
             codec_name,
             codec_id: codec_params.codec_id,
         }
+    }
+
+    pub(crate) fn codec(&self) -> &'static ffmpeg::AVCodec {
+        crate::codec::find_decoder_by_id(self.codec_id)
+            .expect("codec could not be found")
     }
 }
 
@@ -85,7 +100,7 @@ pub struct FrameRate {
 }
 
 impl std::fmt::Debug for FrameRate {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "FrameRate({}/{}, fps={:.2})",

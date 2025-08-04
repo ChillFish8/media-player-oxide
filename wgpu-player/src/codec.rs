@@ -18,6 +18,20 @@ pub(crate) fn find_decoder_by_name(name: &str) -> Option<&'static ffmpeg::AVCode
     }
 }
 
+/// Find a ffmpeg codec by ID.
+///
+/// Returns `None` if the codec does not exist.
+pub(crate) fn find_decoder_by_id(
+    id: ffmpeg::AVCodecID,
+) -> Option<&'static ffmpeg::AVCodec> {
+    let codec = unsafe { ffmpeg::avcodec_find_decoder(id) };
+    if codec.is_null() {
+        None
+    } else {
+        Some(unsafe { &*codec })
+    }
+}
+
 /// The decoder processes incoming packets and produces media frames.
 pub(crate) trait Decoder: Sized {
     /// Create a new decoder using the target codec.

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::codec::VideoDecoder;
+use crate::codec::{BaseDecoder, VideoDecoder};
 use crate::{AcceleratorConfig, InputSource, MediaType, OutputPixelFormat};
 
 /// The builder for creating new [MediaPlayer] state machines.
@@ -113,9 +113,36 @@ impl MediaPlayerBuilder {
             .source
             .find_best_stream(MediaType::Subtitle, self.stream_index_subtitle)?;
 
+        tracing::info!(
+            video = ?video_stream,
+            audio = ?audio_stream,
+            subtitle = ?subtitle_stream,
+            "setting up player",
+        );
+
+        let decoder_video = video_stream
+            .as_ref()
+            .map(|stream| {
+                self.source
+                    .open_video_stream(stream.index, &self.accelerator_config)
+            })
+            .transpose()?;
+
+        let decoder_audio = audio_stream
+            .as_ref()
+            .map(|stream| self.source.open_stream(stream.index))
+            .transpose()?;
+
+        let decoder_subtitle = subtitle_stream
+            .as_ref()
+            .map(|stream| self.source.open_stream(stream.index))
+            .transpose()?;
+
         Ok(MediaPlayer {
             source: self.source,
-            video_decoder: None,
+            decoder_video,
+            decoder_audio,
+            decoder_subtitle,
             video_filter: None,
         })
     }
@@ -129,7 +156,11 @@ impl MediaPlayerBuilder {
 /// thread that occasionally checks if it should play, pause, seek, etc...
 pub struct MediaPlayer {
     source: InputSource,
-    video_decoder: Option<VideoDecoder>,
+
+    decoder_video: Option<VideoDecoder>,
+    decoder_audio: Option<BaseDecoder>,
+    decoder_subtitle: Option<BaseDecoder>,
+
     video_filter: Option<()>,
 }
 

@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
+use crate::codec::{BaseDecoder, VideoDecoder};
 use crate::stream::StreamInfo;
-use crate::{MediaType, error};
+use crate::{AcceleratorConfig, MediaType, error};
 
 /// The input source is a media source containing video or audio or both.
 ///
@@ -90,6 +91,11 @@ impl InputSource {
         unsafe { &*(self.ctx.as_ptr()) }
     }
 
+    fn streams(&self) -> &[*mut ffmpeg::AVStream] {
+        let ctx = self.as_ctx();
+        unsafe { std::slice::from_raw_parts(ctx.streams, self.num_streams()) }
+    }
+
     /// Returns the duration of the source.
     pub fn duration(&self) -> Duration {
         let ctx = self.as_ctx();
@@ -109,11 +115,7 @@ impl InputSource {
 
     /// Iterate over all available audio, video and subtitle streams in the source.
     pub fn iter_streams(&self) -> impl Iterator<Item = StreamInfo> {
-        let ctx = self.as_ctx();
-        let streams =
-            unsafe { std::slice::from_raw_parts(ctx.streams, self.num_streams()) };
-
-        streams
+        self.streams()
             .iter()
             .map(|v| unsafe { StreamInfo::from_raw(*v) })
             .filter(|stream| {
@@ -164,13 +166,39 @@ impl InputSource {
             Err(other) => return Err(other.into()),
         };
 
-        let ctx = self.as_ctx();
-        let stream = unsafe {
-            let streams = std::slice::from_raw_parts(ctx.streams, self.num_streams());
-            StreamInfo::from_raw(streams[stream_index])
-        };
-
+        let streams = self.streams();
+        let stream = unsafe { StreamInfo::from_raw(streams[stream_index]) };
         Ok(Some(stream))
+    }
+
+    /// Open a target stream index for decoding.
+    pub(crate) fn open_stream(
+        &self,
+        index: usize,
+    ) -> Result<BaseDecoder, error::FFmpegError> {
+        let stream_info = self.stream(index);
+        let streams = self.streams();
+
+        let stream = unsafe { &*streams[index] };
+        let parameters = unsafe { stream.codecpar.as_ref() };
+
+        BaseDecoder::open(stream_info.codec(), parameters)
+    }
+
+    /// A specialised variant of `open_stream` for video decoding using
+    /// hardware acceleration.
+    pub(crate) fn open_video_stream(
+        &self,
+        index: usize,
+        accelerator_config: &AcceleratorConfig,
+    ) -> Result<VideoDecoder, error::FFmpegError> {
+        let stream_info = self.stream(index);
+        let streams = self.streams();
+
+        let stream = unsafe { &*streams[index] };
+        let parameters = unsafe { stream.codecpar.as_ref() };
+
+        VideoDecoder::open(stream_info.codec(), parameters, accelerator_config)
     }
 
     pub(crate) fn seek(&mut self, position: Duration) -> crate::Result<()> {
