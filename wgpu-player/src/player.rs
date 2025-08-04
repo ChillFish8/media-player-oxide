@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::codec::{BaseDecoder, VideoDecoder};
-use crate::{AcceleratorConfig, InputSource, MediaType, OutputPixelFormat};
+use crate::{AcceleratorConfig, InputSource, MediaType, OutputPixelFormat, error};
 
 /// The builder for creating new [MediaPlayer] state machines.
 pub struct MediaPlayerBuilder {
@@ -102,7 +102,7 @@ impl MediaPlayerBuilder {
     }
 
     /// Create the [MediaPlayer] using the set config.
-    pub fn build(self) -> crate::Result<MediaPlayer> {
+    pub fn build(mut self) -> crate::Result<MediaPlayer> {
         let video_stream = self
             .source
             .find_best_stream(MediaType::Video, self.stream_index_video)?;
@@ -112,6 +112,11 @@ impl MediaPlayerBuilder {
         let subtitle_stream = self
             .source
             .find_best_stream(MediaType::Subtitle, self.stream_index_subtitle)?;
+
+        if video_stream.is_none() && audio_stream.is_none() && subtitle_stream.is_none()
+        {
+            return Err(error::PlayerError::NoAvailableStreams);
+        }
 
         tracing::info!(
             video = ?video_stream,
@@ -137,6 +142,13 @@ impl MediaPlayerBuilder {
             .as_ref()
             .map(|stream| self.source.open_stream(stream.index))
             .transpose()?;
+
+        // To avoid doing unnecessary work, discard everything but the data we care about.
+        self.source.keep_streams(|stream| {
+            Some(stream.index) == video_stream.as_ref().map(|info| info.index)
+                && Some(stream.index) == audio_stream.as_ref().map(|info| info.index)
+                && Some(stream.index) == subtitle_stream.as_ref().map(|info| info.index)
+        });
 
         Ok(MediaPlayer {
             source: self.source,

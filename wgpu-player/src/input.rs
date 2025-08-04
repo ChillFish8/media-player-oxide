@@ -91,9 +91,18 @@ impl InputSource {
         unsafe { &*(self.ctx.as_ptr()) }
     }
 
+    fn as_mut_ctx(&self) -> &mut ffmpeg::AVFormatContext {
+        unsafe { &mut *(self.ctx.as_ptr()) }
+    }
+
     fn streams(&self) -> &[*mut ffmpeg::AVStream] {
         let ctx = self.as_ctx();
         unsafe { std::slice::from_raw_parts(ctx.streams, self.num_streams()) }
+    }
+
+    fn streams_mut(&mut self) -> &mut [*mut ffmpeg::AVStream] {
+        let ctx = self.as_ctx();
+        unsafe { std::slice::from_raw_parts_mut(ctx.streams, self.num_streams()) }
     }
 
     /// Returns the duration of the source.
@@ -199,6 +208,24 @@ impl InputSource {
         let parameters = unsafe { stream.codecpar.as_ref() };
 
         VideoDecoder::open(stream_info.codec(), parameters, accelerator_config)
+    }
+
+    /// Keep any streams which match the provided predicate and discard the rest.
+    ///
+    /// This will ignore the stream packets when processing and
+    /// avoid it being muxed/decoded.
+    pub(crate) fn keep_streams(
+        &mut self,
+        mut predicate: impl FnMut(&StreamInfo) -> bool,
+    ) {
+        for stream in self.streams_mut() {
+            let stream = unsafe { &mut **stream };
+            let info = unsafe { StreamInfo::from_raw(stream) };
+
+            if !predicate(&info) {
+                stream.discard = ffmpeg::AVDISCARD_ALL;
+            }
+        }
     }
 
     pub(crate) fn seek(&mut self, position: Duration) -> crate::Result<()> {

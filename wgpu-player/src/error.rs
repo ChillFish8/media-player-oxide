@@ -9,6 +9,13 @@ pub enum PlayerError {
     #[error(transparent)]
     /// An error the was raised by the FFmpeg libraries.
     FFmpegError(#[from] FFmpegError),
+    #[error("end of stream")]
+    /// The streams have been fully consumed and there are no frames
+    /// left to process.
+    EndOfStream,
+    #[error("no available streams")]
+    /// There are no streams available to play.
+    NoAvailableStreams,
 }
 
 #[derive(Debug)]
