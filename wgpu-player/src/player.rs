@@ -1,7 +1,20 @@
+use std::mem;
 use std::time::Duration;
 
-use crate::codec::{BaseDecoder, VideoDecoder};
-use crate::{AcceleratorConfig, InputSource, MediaType, OutputPixelFormat, error};
+use rusty_ffmpeg::ffi as ffmpeg;
+
+use crate::codec::{BaseDecoder, Decoder, VideoDecoder};
+use crate::stream::StreamInfo;
+use crate::{
+    AcceleratorConfig,
+    InputSource,
+    MediaType,
+    OutputPixelFormat,
+    SampleFormat,
+    error,
+};
+
+const EAGAIN: i32 = -(ffmpeg::EAGAIN as i32);
 
 /// The builder for creating new [MediaPlayer] state machines.
 pub struct MediaPlayerBuilder {
@@ -128,19 +141,36 @@ impl MediaPlayerBuilder {
         let decoder_video = video_stream
             .as_ref()
             .map(|stream| {
-                self.source
-                    .open_video_stream(stream.index, &self.accelerator_config)
+                let decoder = self
+                    .source
+                    .open_video_stream(stream.index, &self.accelerator_config)?;
+                Ok::<_, error::FFmpegError>(TaggedDecoder {
+                    stream: stream.clone(),
+                    decoder,
+                })
             })
             .transpose()?;
 
         let decoder_audio = audio_stream
             .as_ref()
-            .map(|stream| self.source.open_stream(stream.index))
+            .map(|stream| {
+                let decoder = self.source.open_stream(stream.index)?;
+                Ok::<_, error::FFmpegError>(TaggedDecoder {
+                    stream: stream.clone(),
+                    decoder,
+                })
+            })
             .transpose()?;
 
         let decoder_subtitle = subtitle_stream
             .as_ref()
-            .map(|stream| self.source.open_stream(stream.index))
+            .map(|stream| {
+                let decoder = self.source.open_stream(stream.index)?;
+                Ok::<_, error::FFmpegError>(TaggedDecoder {
+                    stream: stream.clone(),
+                    decoder,
+                })
+            })
             .transpose()?;
 
         // To avoid doing unnecessary work, discard everything but the data we care about.
@@ -152,10 +182,20 @@ impl MediaPlayerBuilder {
 
         Ok(MediaPlayer {
             source: self.source,
+
             decoder_video,
             decoder_audio,
             decoder_subtitle,
-            video_filter: None,
+
+            packet: MediaPacket::new()?,
+            frame_video: MediaFrame::new()?,
+            frame_video_ready: None,
+            frame_audio: MediaFrame::new()?,
+            frame_audio_ready: None,
+            frame_subtitle: MediaFrame::new()?,
+            frame_subtitle_ready: None,
+
+            statistics: PlayerStatistics::default(),
         })
     }
 }
@@ -169,22 +209,48 @@ impl MediaPlayerBuilder {
 pub struct MediaPlayer {
     source: InputSource,
 
-    decoder_video: Option<VideoDecoder>,
-    decoder_audio: Option<BaseDecoder>,
-    decoder_subtitle: Option<BaseDecoder>,
+    decoder_video: Option<TaggedDecoder<VideoDecoder>>,
+    decoder_audio: Option<TaggedDecoder<BaseDecoder>>,
+    decoder_subtitle: Option<TaggedDecoder<BaseDecoder>>,
 
-    video_filter: Option<()>,
+    packet: MediaPacket,
+    /// A frame holding video data.
+    frame_video: MediaFrame,
+    /// If `Some`, signals if the video frame already has valid data
+    /// ready and provides the PTS timestamp which can be used for
+    /// priority.
+    frame_video_ready: Option<i64>,
+    /// A frame holding audio data.
+    frame_audio: MediaFrame,
+    /// If `Some`, signals if the audio frame already has valid data
+    /// ready and provides the PTS timestamp which can be used for
+    /// priority.
+    frame_audio_ready: Option<i64>,
+    /// A frame holding subtitle data.
+    frame_subtitle: MediaFrame,
+    /// If `Some`, signals if the subtitle frame already has valid data
+    /// ready and provides the PTS timestamp which can be used for
+    /// priority.
+    frame_subtitle_ready: Option<i64>,
+
+    statistics: PlayerStatistics,
 }
 
 impl MediaPlayer {
+    #[inline]
+    /// Returns a read-only view of the current player statistics.
+    pub fn statistics(&self) -> &PlayerStatistics {
+        &self.statistics
+    }
+
     /// Seek to a target position in the [InputSource].
     pub fn seek(&mut self, position: Duration) -> crate::Result<()> {
-        self.source.seek(position)
+        self.source.seek(position).map_err(error::PlayerError::from)
     }
 
     /// Begin the media decoding.
     pub fn play(&mut self) -> crate::Result<()> {
-        self.source.play()
+        self.source.play().map_err(error::PlayerError::from)
     }
 
     /// Pause the media decoding.
@@ -192,27 +258,536 @@ impl MediaPlayer {
     /// NOTE: This only really applies to network-based streams, if you continue
     /// to poll `process_next_frame` you will continue to get frames.
     pub fn pause(&mut self) -> crate::Result<()> {
-        self.source.pause()
+        self.source.pause().map_err(error::PlayerError::from)
     }
 
     /// Drives the player state machine until at least one frame
     /// is produced or the [InputSource] reaches the end of the stream.
-    pub fn process_next_frame(&mut self) -> crate::Result<Option<DecodedFrame>> {
-        todo!()
+    pub fn process_next_frame(&mut self) -> crate::Result<DecodedFrame> {
+        let start = std::time::Instant::now();
+        let frame = loop {
+            let result = self.get_next_frame();
+            match result {
+                Ok(frame) => break frame,
+                Err(err)
+                    if err.errno() == EAGAIN || err.errno() == ffmpeg::AVERROR_EOF => {},
+                Err(err) => return Err(err.into()),
+            }
+
+            self.read_next_packet()?;
+            self.dispatch_packet()?;
+        };
+        self.statistics.frames_total_time += start.elapsed();
+        Ok(frame)
+    }
+
+    /// Retrieves the next available frame from the decoders.
+    ///
+    /// Priority is given to the frames already available and will be
+    /// returned in order of their PTS.
+    ///
+    /// After the already ready frames have been processed, we will poll each
+    /// decoder once and update the ready states.
+    fn get_next_frame(&mut self) -> Result<DecodedFrame, error::FFmpegError> {
+        // TODO: We always allocate a new frame because of lifetimes, can we improve this?
+        if let Some(frame) = self.get_ready_frame()? {
+            return Ok(frame);
+        }
+
+        if let Some(video) = self.decoder_video.as_mut() {
+            ignore_out_of_data_error(video.decoder.decode(&mut self.frame_video))?;
+        }
+
+        if let Some(audio) = self.decoder_audio.as_mut() {
+            ignore_out_of_data_error(audio.decoder.decode(&mut self.frame_audio))?;
+        }
+
+        if let Some(subtitle) = self.decoder_subtitle.as_mut() {
+            ignore_out_of_data_error(subtitle.decoder.decode(&mut self.frame_subtitle))?;
+        }
+
+        if let Some(frame) = self.get_ready_frame()? {
+            Ok(frame)
+        } else {
+            Err(error::FFmpegError::from_raw_errno(EAGAIN))
+        }
+    }
+
+    fn get_ready_frame(&mut self) -> Result<Option<DecodedFrame>, error::FFmpegError> {
+        let video_ready_ts = self.frame_video_ready.unwrap_or(i64::MAX);
+        let audio_ready_ts = self.frame_audio_ready.unwrap_or(i64::MAX);
+        let subtitle_ready_ts = self.frame_subtitle_ready.unwrap_or(i64::MAX);
+
+        if video_ready_ts <= audio_ready_ts
+            && video_ready_ts <= subtitle_ready_ts
+            && video_ready_ts != i64::MAX
+        {
+            let blank_frame = MediaFrame::new()?;
+            self.frame_video_ready = None;
+            let ready_frame = mem::replace(&mut self.frame_video, blank_frame);
+            Ok(Some(DecodedFrame::Video(VideoFrame { inner: ready_frame })))
+        } else if audio_ready_ts <= video_ready_ts
+            && audio_ready_ts <= subtitle_ready_ts
+            && audio_ready_ts != i64::MAX
+        {
+            let blank_frame = MediaFrame::new()?;
+            self.frame_audio_ready = None;
+            let ready_frame = mem::replace(&mut self.frame_audio, blank_frame);
+            Ok(Some(DecodedFrame::Audio(AudioFrame { inner: ready_frame })))
+        } else if subtitle_ready_ts <= video_ready_ts
+            && subtitle_ready_ts <= audio_ready_ts
+            && subtitle_ready_ts != i64::MAX
+        {
+            let blank_frame = MediaFrame::new()?;
+            self.frame_subtitle_ready = None;
+            let ready_frame = mem::replace(&mut self.frame_subtitle, blank_frame);
+            Ok(Some(DecodedFrame::Subtitle(SubtitleFrame {
+                inner: ready_frame,
+            })))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn read_next_packet(&mut self) -> crate::Result<()> {
+        let start = std::time::Instant::now();
+
+        self.packet.reset();
+        let result = self.source.read_packet(&mut self.packet);
+        match result {
+            Ok(()) => {},
+            Err(err) if err.errno() == ffmpeg::AVERROR_EOF => {
+                return Err(error::PlayerError::EndOfStream);
+            },
+            Err(err) => return Err(error::PlayerError::FFmpegError(err)),
+        }
+
+        self.statistics.packet_read_time += start.elapsed();
+        self.statistics.packet_read_total += 1;
+
+        Ok(())
+    }
+
+    fn dispatch_packet(&mut self) -> Result<(), error::FFmpegError> {
+        if let Some(video_decoder) = self.decoder_video.as_mut() {
+            if self.packet.stream_index as usize == video_decoder.stream.index {
+                video_decoder.decoder.write_packet(&mut self.packet)?;
+            }
+        }
+
+        if let Some(audio_decoder) = self.decoder_audio.as_mut() {
+            if self.packet.stream_index as usize == audio_decoder.stream.index {
+                audio_decoder.decoder.write_packet(&mut self.packet)?;
+            }
+        }
+
+        if let Some(subtitle_decoder) = self.decoder_subtitle.as_mut() {
+            if self.packet.stream_index as usize == subtitle_decoder.stream.index {
+                subtitle_decoder.decoder.write_packet(&mut self.packet)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
 /// A frame which has been decoded from the [InputSource].
 pub enum DecodedFrame {
-    /// A decoded video frame.
+    Video(VideoFrame),
+    Audio(AudioFrame),
+    Subtitle(SubtitleFrame),
+}
+
+/// The core components that can be accessed for video, audio and subtitles.
+pub trait Frame {
+    /// Returns the presentation timestamp of the frame.
+    fn pts(&self) -> Duration;
+
+    /// Signals if the frame data is backed by hardware (i.e. GPU)
+    fn is_hw_backed(&self) -> bool;
+}
+
+/// A decoded video frame.
+///
+/// In the pixel format of one of the target [OutputPixelFormat] formats
+/// you configure on the player.
+pub struct VideoFrame {
+    inner: MediaFrame,
+}
+
+impl VideoFrame {
+    #[inline]
+    /// Returns the pixel format of the video frame.
+    pub fn pixel_format(&self) -> OutputPixelFormat {
+        OutputPixelFormat::try_from_av_pix_fmt(self.inner.format)
+            .expect("unexpected video pixel format encountered")
+    }
+
+    #[inline]
+    /// The width of the frame in pixels.
+    pub fn width(&self) -> usize {
+        self.inner.width as usize
+    }
+
+    #[inline]
+    /// The height of the frame in pixels.
+    pub fn height(&self) -> usize {
+        self.inner.height as usize
+    }
+
+    #[inline]
+    /// Returns the stride of the given plane.
+    pub fn stride(&self, index: usize) -> usize {
+        assert!(index < self.num_planes(), "index out of range");
+        // TODO: Negative values situation possible within this context?
+        self.inner.linesize[index] as usize
+    }
+
+    #[inline]
+    /// The video plane width in pixels.
+    pub fn plane_width(&self, index: usize) -> usize {
+        assert!(index < self.num_planes(), "index out of range");
+
+        // Logic taken from image_get_linesize().
+        if index != 1 && index != 2 {
+            return self.width();
+        }
+
+        if let Some(desc) = self.pixel_format().descriptor() {
+            let s = desc.log2_chroma_w;
+            (self.width() + (1 << s) - 1) >> s
+        } else {
+            self.width()
+        }
+    }
+
+    #[inline]
+    /// The video plane height in pixels.
+    pub fn plane_height(&self, index: usize) -> usize {
+        assert!(index < self.num_planes(), "index out of range");
+
+        // Logic taken from av_image_fill_pointers().
+        if index != 1 && index != 2 {
+            return self.height();
+        }
+
+        if let Some(desc) = self.pixel_format().descriptor() {
+            let s = desc.log2_chroma_w;
+            (self.height() + (1 << s) - 1) >> s
+        } else {
+            self.height()
+        }
+    }
+
+    #[inline]
+    /// Returns the number of video planes within the frame.
+    pub fn num_planes(&self) -> usize {
+        let mut total = 0;
+        for i in 0..8 {
+            if self.inner.linesize[i] == 0 {
+                break;
+            }
+            total += 1;
+        }
+        total
+    }
+
+    /// Retrieve the raw data of a given plane.
     ///
-    /// In the pixel format of one of the target [OutputPixelFormat] formats
-    /// you configure on the player.
-    Video(),
-    /// A decoded audio frame.
-    Audio(),
-    /// A decoded subtitle frame.
+    /// If the frame is hardware backed, it will transfer the data
+    /// from the device to system memory which may increase latency.
+    pub fn plane_data(&mut self, index: usize) -> crate::Result<&[u8]> {
+        assert!(index < self.num_planes(), "index out of range");
+
+        if self.is_hw_backed() {
+            self.inner.copy_hw_to_software()?;
+        }
+
+        let ptr = self.inner.data[index];
+        debug_assert!(!ptr.is_null());
+
+        let buffer = unsafe {
+            std::slice::from_raw_parts(
+                ptr,
+                self.stride(index) * self.plane_height(index),
+            )
+        };
+
+        Ok(buffer)
+    }
+}
+
+impl Frame for VideoFrame {
+    #[inline]
+    fn pts(&self) -> Duration {
+        pts_to_duration(self.inner.pts, self.inner.time_base)
+    }
+
+    #[inline]
+    fn is_hw_backed(&self) -> bool {
+        !self.inner.hw_frames_ctx.is_null()
+    }
+}
+
+/// A decoded audio frame.
+pub struct AudioFrame {
+    inner: MediaFrame,
+}
+
+impl AudioFrame {
+    #[inline]
+    /// Returns the number of audio channels.
+    pub fn num_channels(&self) -> usize {
+        self.inner.ch_layout.nb_channels as usize
+    }
+
+    #[inline]
+    /// Returns the number of audio samples per channel.
+    pub fn num_samples(&self) -> usize {
+        self.inner.nb_samples as usize
+    }
+
+    #[inline]
+    /// Returns if the audio samples are planar.
+    pub fn is_planar(&self) -> bool {
+        self.sample_format().is_planar()
+    }
+
+    #[inline]
+    /// Returns if the audio samples are interleaved/packed.
+    pub fn is_packed(&self) -> bool {
+        self.sample_format().is_packed()
+    }
+
+    #[inline]
+    /// Returns the output format of the audio.
+    pub fn sample_format(&self) -> SampleFormat {
+        SampleFormat::try_from_av_sample_fmt(self.inner.format)
+            .expect("unexpected audio sample format encountered")
+    }
+
+    #[inline]
+    /// Returns the number of audio planes within the frame.
+    pub fn num_planes(&self) -> usize {
+        if self.inner.linesize[0] == 0 {
+            return 0;
+        }
+
+        if self.is_packed() {
+            1
+        } else {
+            self.num_channels()
+        }
+    }
+
+    #[inline]
+    /// Retrieve the raw data of a given plane.
     ///
-    /// This can be in either text/ASS format or bitmap format.
-    Subtitle(),
+    /// If the frame is hardware backed, it will transfer the data
+    /// from the device to system memory which may increase latency.
+    pub fn plane_data(&mut self, index: usize) -> crate::Result<&[u8]> {
+        assert!(index < self.num_planes(), "index out of range");
+
+        if self.is_hw_backed() {
+            self.inner.copy_hw_to_software()?;
+        }
+
+        let ptr = self.inner.data[index];
+        debug_assert!(!ptr.is_null());
+
+        let buffer = unsafe {
+            std::slice::from_raw_parts(ptr, self.inner.linesize[index] as usize)
+        };
+
+        Ok(buffer)
+    }
+}
+
+impl Frame for AudioFrame {
+    fn pts(&self) -> Duration {
+        pts_to_duration(self.inner.pts, self.inner.time_base)
+    }
+
+    fn is_hw_backed(&self) -> bool {
+        !self.inner.hw_frames_ctx.is_null()
+    }
+}
+
+/// A decoded subtitle frame.
+///
+/// This can be in either text/ASS format or bitmap format.
+pub struct SubtitleFrame {
+    inner: MediaFrame,
+}
+
+impl SubtitleFrame {
+    fn subtitle_frame(&self) -> &ffmpeg::AVSubtitle {
+        unsafe {
+            // Based on the source of subtitle_wrap_frame for the new way of handling
+            // subtitles from a AVFrame.
+            let subtitle_ptr: *const ffmpeg::AVSubtitle =
+                (*self.inner.buf[0]).data.cast();
+            subtitle_ptr
+                .as_ref()
+                .expect("subtitle frame should have non-null buf ptr")
+        }
+    }
+}
+
+impl Frame for SubtitleFrame {
+    fn pts(&self) -> Duration {
+        pts_to_duration(self.inner.pts, self.inner.time_base)
+    }
+
+    fn is_hw_backed(&self) -> bool {
+        !self.inner.hw_frames_ctx.is_null()
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+/// Statistics collected from the player around timings, etc...
+pub struct PlayerStatistics {
+    /// The number of video frames read from the stream and decoded so far.
+    pub num_video_frames_decoded: u64,
+    /// The number of audio frames read from the stream and decoded so far.
+    pub num_audio_frames_decoded: u64,
+    /// The number of subtitle frames read from the stream and decoded so far.
+    pub num_subtitle_frames_decoded: u64,
+    /// The total number of packets read.
+    pub packet_read_total: u64,
+    /// The total amount of time spent reading packets.
+    pub packet_read_time: Duration,
+    /// The total number of frames read from all streams.
+    pub frames_decoded_total: u64,
+    /// The total amount of time spent decoding frames.
+    pub frames_decoded_time: Duration,
+    /// The total amount of time spent getting frames from the media.
+    ///
+    /// This includes the time to read packets and decode.
+    pub frames_total_time: Duration,
+}
+
+struct MediaFrame {
+    ptr: *mut ffmpeg::AVFrame,
+}
+
+impl MediaFrame {
+    fn new() -> Result<Self, error::FFmpegError> {
+        let packet = unsafe { ffmpeg::av_frame_alloc() };
+        if packet.is_null() {
+            Err(error::FFmpegError::custom("failed to allocate frame"))
+        } else {
+            Ok(Self { ptr: packet })
+        }
+    }
+
+    fn copy_hw_to_software(&mut self) -> Result<(), error::FFmpegError> {
+        if !self.hw_frames_ctx.is_null() {
+            let mut sw_frame = MediaFrame::new()?;
+            let result =
+                unsafe { ffmpeg::av_hwframe_transfer_data(sw_frame.ptr, self.ptr, 0) };
+            error::convert_ff_result(result)?;
+            *self = sw_frame;
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        unsafe { ffmpeg::av_frame_unref(self.ptr) }
+    }
+}
+
+impl std::ops::Deref for MediaFrame {
+    type Target = ffmpeg::AVFrame;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.ptr }
+    }
+}
+
+impl std::ops::DerefMut for MediaFrame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.ptr }
+    }
+}
+
+impl Drop for MediaFrame {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            self.reset();
+            unsafe { ffmpeg::av_frame_free(&raw mut self.ptr) };
+        }
+    }
+}
+
+struct TaggedDecoder<D> {
+    stream: StreamInfo,
+    decoder: D,
+}
+
+#[inline]
+fn ignore_out_of_data_error(
+    result: Result<(), error::FFmpegError>,
+) -> Result<bool, error::FFmpegError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(err) if err.errno() == ffmpeg::AVERROR_EOF || err.errno() == EAGAIN => {
+            Ok(false)
+        },
+        Err(err) => Err(err),
+    }
+}
+
+struct MediaPacket {
+    ptr: *mut ffmpeg::AVPacket,
+}
+
+impl MediaPacket {
+    fn new() -> Result<Self, error::FFmpegError> {
+        let packet = unsafe { ffmpeg::av_packet_alloc() };
+        if packet.is_null() {
+            Err(error::FFmpegError::custom("failed to allocate packet"))
+        } else {
+            Ok(Self { ptr: packet })
+        }
+    }
+
+    fn reset(&mut self) {
+        unsafe { ffmpeg::av_packet_unref(self.ptr) }
+    }
+}
+
+impl std::ops::Deref for MediaPacket {
+    type Target = ffmpeg::AVPacket;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.ptr }
+    }
+}
+
+impl std::ops::DerefMut for MediaPacket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.ptr }
+    }
+}
+
+impl Drop for MediaPacket {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            self.reset();
+            unsafe { ffmpeg::av_packet_free(&raw mut self.ptr) };
+        }
+    }
+}
+
+fn pts_to_duration(ts: i64, time_base: ffmpeg::AVRational) -> Duration {
+    if ts == ffmpeg::AV_NOPTS_VALUE {
+        Duration::ZERO
+    } else {
+        let micros = (ts as u64)
+            .wrapping_mul(time_base.num as u64)
+            .wrapping_mul(1_000_000)
+            .wrapping_div(time_base.den as u64);
+        Duration::from_micros(micros)
+    }
 }

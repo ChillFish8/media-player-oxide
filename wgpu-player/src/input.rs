@@ -258,7 +258,10 @@ impl InputSource {
         Ok(())
     }
 
-    pub(crate) fn read_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+    pub(crate) fn read_packet(
+        &mut self,
+        packet: &mut ffmpeg::AVPacket,
+    ) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::av_read_frame(self.ctx.as_ptr(), packet) };
         error::convert_ff_result(result)?;
         Ok(())

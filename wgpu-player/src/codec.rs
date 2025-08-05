@@ -65,7 +65,10 @@ pub(crate) trait Decoder: Sized {
     fn open(&mut self) -> Result<(), error::FFmpegError>;
 
     /// Push packet data into the decoder.
-    fn write_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+    fn write_packet(
+        &mut self,
+        packet: &mut ffmpeg::AVPacket,
+    ) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), packet) };
         error::convert_ff_result(result)?;
         Ok(())
