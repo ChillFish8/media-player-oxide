@@ -3,7 +3,8 @@ use std::ptr;
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::accelerator::{Accelerator, AcceleratorConfig};
-use crate::error;
+use crate::filter::VideoFilterPipeline;
+use crate::{OutputPixelFormat, error};
 
 /// Find a ffmpeg codec by name.
 ///
@@ -168,6 +169,8 @@ impl Drop for BaseDecoder {
 pub(crate) struct VideoDecoder {
     base_decoder: BaseDecoder,
     accelerator: Option<Accelerator>,
+    output_pixel_formats: Vec<OutputPixelFormat>,
+    filter: Option<VideoFilterPipeline>,
 }
 
 impl VideoDecoder {
@@ -182,8 +185,14 @@ impl VideoDecoder {
     pub(crate) fn open(
         codec: &'static ffmpeg::AVCodec,
         codec_params: Option<&ffmpeg::AVCodecParameters>,
+        output_pixel_format: Vec<OutputPixelFormat>,
         accelerator_config: &AcceleratorConfig,
     ) -> Result<Self, error::FFmpegError> {
+        assert!(
+            output_pixel_format.is_empty(),
+            "at least one pixel format must be provided"
+        );
+
         for accelerator in accelerator_config.accelerators() {
             tracing::debug!(accelerator = ?accelerator, "attempting to use accelerator");
 
@@ -213,15 +222,25 @@ impl VideoDecoder {
             decoder.copy_codec_params(codec_params)?;
         }
         decoder.open()?;
+        decoder.output_pixel_formats = output_pixel_format;
 
         Ok(decoder)
+    }
+
+    pub(crate) fn output_pixel_formats(&self) -> &[OutputPixelFormat] {
+        &self.output_pixel_formats
     }
 
     pub(crate) fn accelerator(&self) -> Option<Accelerator> {
         self.accelerator
     }
 
-    pub(crate) fn pix_fmt(&self) -> ffmpeg::AVPixelFormat {
+    pub(crate) fn hw_frames_ctx(&self) -> *mut ffmpeg::AVBufferRef {
+        let ctx = self.base_decoder.as_ctx();
+        ctx.hw_frames_ctx
+    }
+
+    fn pix_fmt(&self) -> ffmpeg::AVPixelFormat {
         let accelerator = match self.accelerator() {
             None => {
                 let ctx = self.as_ctx();
@@ -243,38 +262,58 @@ impl VideoDecoder {
         }
     }
 
-    // pub(crate) fn filter_input_args(&self) -> std::ffi::CString {
-    //     use std::fmt::Write;
-    //     let ctx = self.as_ctx();
-    //     let mut args = String::new();
-    //     write!(args, "width={}", ctx.width).unwrap();
-    //     write!(args, ":height={}", ctx.height).unwrap();
-    //     write!(args, ":pix_fmt={}", self.pix_fmt()).unwrap();
-    //     // TODO: This isn't technically correct, but I am not sure why this is needed or if it
-    //     //       is actually used at all?
-    //     write!(
-    //         args,
-    //         ":time_base={}/{}",
-    //         ctx.framerate.den, ctx.framerate.num
-    //     )
-    //         .unwrap();
-    //     write!(
-    //         args,
-    //         ":frame_rate={}/{}",
-    //         ctx.framerate.num, ctx.framerate.den
-    //     )
-    //         .unwrap();
-    //     write!(args, ":colorspace={}", ctx.colorspace).unwrap();
-    //     write!(args, ":range={}", ctx.color_range).unwrap();
-    //     write!(
-    //         args,
-    //         ":pixel_aspect={}/{}",
-    //         ctx.sample_aspect_ratio.num, ctx.sample_aspect_ratio.den
-    //     )
-    //         .unwrap();
-    //     tracing::debug!(args = ?args, "got filter args");
-    //     std::ffi::CString::new(args).unwrap()
-    // }
+    pub(crate) fn build_filter_args(&self) -> String {
+        if self.accelerator().is_some() {
+            format!(
+                "hwdownload,format={}",
+                crate::join_pixel_formats(&self.output_pixel_formats)
+            )
+        } else {
+            format!(
+                "format={}",
+                crate::join_pixel_formats(&self.output_pixel_formats)
+            )
+        }
+    }
+
+    pub(crate) fn filter_input_args(&self) -> std::ffi::CString {
+        use std::fmt::Write;
+        let ctx = self.as_ctx();
+        let mut args = String::new();
+        write!(args, "width={}", ctx.width).unwrap();
+        write!(args, ":height={}", ctx.height).unwrap();
+        write!(args, ":pix_fmt={}", self.pix_fmt()).unwrap();
+        // TODO: This isn't technically correct, but I am not sure why this is needed or if it
+        //       is actually used at all?
+        write!(
+            args,
+            ":time_base={}/{}",
+            ctx.framerate.den, ctx.framerate.num
+        )
+        .unwrap();
+        write!(
+            args,
+            ":frame_rate={}/{}",
+            ctx.framerate.num, ctx.framerate.den
+        )
+        .unwrap();
+        write!(args, ":colorspace={}", ctx.colorspace).unwrap();
+        write!(args, ":range={}", ctx.color_range).unwrap();
+        write!(
+            args,
+            ":pixel_aspect={}/{}",
+            ctx.sample_aspect_ratio.num, ctx.sample_aspect_ratio.den
+        )
+        .unwrap();
+        tracing::debug!(args = ?args, "got filter args");
+        std::ffi::CString::new(args).unwrap()
+    }
+
+    fn ensure_filter_init(&mut self) -> Result<(), error::FFmpegError> {
+        let pipeline = crate::filter::create_video_filter_pipeline(self)?;
+        self.filter = Some(pipeline);
+        Ok(())
+    }
 }
 
 impl Decoder for VideoDecoder {
@@ -283,6 +322,8 @@ impl Decoder for VideoDecoder {
         Ok(Self {
             base_decoder,
             accelerator: None,
+            filter: None,
+            output_pixel_formats: Vec::new(),
         })
     }
 
@@ -312,6 +353,13 @@ impl Decoder for VideoDecoder {
         };
         error::convert_ff_result(result)?;
 
+        Ok(())
+    }
+
+    /// Attempt to decode a new frame and write it to the provided [ffmpeg::AVFrame].
+    fn decode(&mut self, frame: &mut ffmpeg::AVFrame) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), frame) };
+        error::convert_ff_result(result)?;
         Ok(())
     }
 }
@@ -421,7 +469,7 @@ mod tests {
 
         let codec = find_decoder_by_name(codec_name).unwrap();
         let config = AcceleratorConfig::default();
-        let video_decoder = VideoDecoder::open(codec, None, &config)
+        let video_decoder = VideoDecoder::open(codec, None, Vec::new(), &config)
             .expect("accelerated codec creation failed");
         assert!(video_decoder.is_open());
         drop(video_decoder);

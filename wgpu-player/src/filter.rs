@@ -10,33 +10,29 @@ use crate::{OutputPixelFormat, error};
 ///
 /// This is responsible for converting the hardware frames to the target pixel format
 /// which may be done either in hardware or software depending on support.
-pub(crate) fn create_filter_pipeline(
+pub(crate) fn create_video_filter_pipeline(
     video_decoder: &VideoDecoder,
-    target_pixel_format: OutputPixelFormat,
 ) -> Result<VideoFilterPipeline, error::FFmpegError> {
-    tracing::debug!(target_pixel_format = ?target_pixel_format, "creating filter pipeline");
+    tracing::debug!(
+        target_pixel_formats = ?video_decoder.output_pixel_formats(),
+        "creating filter pipeline",
+    );
 
-    let pipeline = VideoFilterPipeline::new()?;
+    let mut pipeline = VideoFilterPipeline::new()?;
     let mut inputs = ptr::null_mut();
     let mut outputs = ptr::null_mut();
-
-    let mut buffer_src_ctx: *mut ffmpeg::AVFilterContext = ptr::null_mut();
-    let mut buffer_sink_ctx: *mut ffmpeg::AVFilterContext = ptr::null_mut();
 
     let buffer_src_args = video_decoder.filter_input_args();
     let buffer_src = unsafe { ffmpeg::avfilter_get_by_name(c"buffer".as_ptr()) };
     let buffer_sink = unsafe { ffmpeg::avfilter_get_by_name(c"buffersink".as_ptr()) };
 
-    let filter = video_decoder
-        .accelerator()
-        .map(|accel| accel.build_filter_graph(target_pixel_format))
-        .unwrap_or_else(|| format!("format={}", target_pixel_format.to_filter_name()));
+    let filter = video_decoder.build_filter_args();
     tracing::debug!(filter = ?filter, "got filter graph");
     let filter_graph_str = CString::new(filter).unwrap();
 
     unsafe {
         let result = ffmpeg::avfilter_graph_create_filter(
-            &raw mut buffer_src_ctx,
+            &raw mut pipeline.buffer_src_ctx,
             buffer_src,
             c"in".as_ptr(),
             buffer_src_args.as_ptr(),
@@ -47,12 +43,12 @@ pub(crate) fn create_filter_pipeline(
         tracing::debug!("filter input created");
 
         let params = ffmpeg::av_buffersrc_parameters_alloc();
-        (*params).hw_frames_ctx = dbg!(video_decoder.hw_frame_ctx());
-        ffmpeg::av_buffersrc_parameters_set(buffer_src_ctx, params);
+        (*params).hw_frames_ctx = video_decoder.hw_frames_ctx();
+        ffmpeg::av_buffersrc_parameters_set(pipeline.buffer_src_ctx, params);
         ffmpeg::av_free(params.cast());
 
         let result = ffmpeg::avfilter_graph_create_filter(
-            &raw mut buffer_sink_ctx,
+            &raw mut pipeline.buffer_sink_ctx,
             buffer_sink,
             c"out".as_ptr(),
             ptr::null(),
@@ -82,7 +78,7 @@ pub(crate) fn create_filter_pipeline(
             ffmpeg::avfilter_link(
                 filter_out.filter_ctx,
                 filter_out.pad_idx as u32,
-                buffer_sink_ctx,
+                pipeline.buffer_sink_ctx,
                 0,
             );
             o = (*o).next;
@@ -92,7 +88,12 @@ pub(crate) fn create_filter_pipeline(
         let mut i = inputs;
         while !i.is_null() {
             let inp = &*i;
-            ffmpeg::avfilter_link(buffer_src_ctx, 0, inp.filter_ctx, inp.pad_idx as u32);
+            ffmpeg::avfilter_link(
+                pipeline.buffer_src_ctx,
+                0,
+                inp.filter_ctx,
+                inp.pad_idx as u32,
+            );
             i = inp.next;
         }
         tracing::debug!("linked outputs");
@@ -108,7 +109,7 @@ pub(crate) fn create_filter_pipeline(
 
             tracing::debug!("filter_stage: {:?}", std::ffi::CStr::from_ptr((*ctx).name));
             if (*(*ctx).filter).flags as u32 & ffmpeg::AVFILTER_FLAG_HWDEVICE != 0 {
-                (*ctx).hw_device_ctx = video_decoder.hw_device_ctx();
+                (*ctx).hw_device_ctx = video_decoder.hw_frames_ctx();
             }
         }
         tracing::debug!("attached hardware context");
@@ -124,12 +125,14 @@ pub(crate) fn create_filter_pipeline(
 }
 
 /// A chain of filters responsible for converting from the hardware frames to
-/// the target pixel format ([OutputPixelFormat](crate::OutputPixelFormat))
+/// the target pixel format ([OutputPixelFormat](OutputPixelFormat))
 ///
 /// The way this is done varies depending on the accelerator but currently conversion
 /// is done via the default `format` filter.
 pub struct VideoFilterPipeline {
     filter_graph: *mut ffmpeg::AVFilterGraph,
+    buffer_src_ctx: *mut ffmpeg::AVFilterContext,
+    buffer_sink_ctx: *mut ffmpeg::AVFilterContext,
 }
 
 impl VideoFilterPipeline {
@@ -140,8 +143,37 @@ impl VideoFilterPipeline {
                 "failed to allocate filter graph",
             ))
         } else {
-            Ok(Self { filter_graph })
+            Ok(Self {
+                filter_graph,
+                buffer_src_ctx: ptr::null_mut(),
+                buffer_sink_ctx: ptr::null_mut(),
+            })
         }
+    }
+
+    pub(crate) fn write_frame(
+        &mut self,
+        frame: &mut ffmpeg::AVFrame,
+    ) -> Result<(), error::FFmpegError> {
+        let result = unsafe {
+            ffmpeg::av_buffersrc_add_frame_flags(
+                self.buffer_src_ctx,
+                frame,
+                ffmpeg::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
+            )
+        };
+        error::convert_ff_result(result)?;
+        Ok(())
+    }
+
+    pub(crate) fn read_frame(
+        &mut self,
+        frame: &mut ffmpeg::AVFrame,
+    ) -> Result<(), error::FFmpegError> {
+        let result =
+            unsafe { ffmpeg::av_buffersink_get_frame(self.buffer_sink_ctx, frame) };
+        error::convert_ff_result(result)?;
+        Ok(())
     }
 }
 
@@ -150,29 +182,5 @@ impl Drop for VideoFilterPipeline {
         if !self.filter_graph.is_null() {
             unsafe { ffmpeg::avfilter_graph_free(&raw mut self.filter_graph) };
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{AcceleratorConfig, InputSource, MediaType};
-
-    #[test]
-    fn test_video_filter_construction() {
-        let _ = tracing_subscriber::fmt::try_init();
-
-        let source = InputSource::open_file("../media/test.mp4").unwrap();
-
-        let stream = source
-            .find_best_stream(MediaType::Video, None)
-            .unwrap()
-            .unwrap();
-
-        let accelerator_config = AcceleratorConfig::default();
-        let mut decoder = stream.open_decoder(&accelerator_config).unwrap();
-
-        let pipeline = create_filter_pipeline(&decoder, OutputPixelFormat::Nv12)
-            .expect("filter should be created successfully");
     }
 }

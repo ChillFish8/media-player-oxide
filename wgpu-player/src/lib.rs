@@ -1,7 +1,7 @@
 mod accelerator;
 mod codec;
 mod error;
-// mod filter;
+mod filter;
 mod input;
 mod player;
 mod stream;
@@ -217,4 +217,17 @@ impl SubtitleFormat {
             _ => None,
         }
     }
+}
+
+pub(crate) fn join_pixel_formats(formats: &[OutputPixelFormat]) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::new();
+    for format in formats {
+        if !output.is_empty() {
+            write!(output, "|").unwrap();
+        }
+        write!(output, "{}", format.to_filter_name()).unwrap();
+    }
+    output
 }

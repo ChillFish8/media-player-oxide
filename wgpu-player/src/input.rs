@@ -9,7 +9,7 @@ use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::codec::{BaseDecoder, VideoDecoder};
 use crate::stream::StreamInfo;
-use crate::{AcceleratorConfig, MediaType, error};
+use crate::{AcceleratorConfig, MediaType, OutputPixelFormat, error};
 
 /// The input source is a media source containing video or audio or both.
 ///
@@ -200,6 +200,7 @@ impl InputSource {
         &self,
         index: usize,
         accelerator_config: &AcceleratorConfig,
+        target_pixel_formats: Vec<OutputPixelFormat>,
     ) -> Result<VideoDecoder, error::FFmpegError> {
         let stream_info = self.stream(index);
         let streams = self.streams();
@@ -207,7 +208,12 @@ impl InputSource {
         let stream = unsafe { &*streams[index] };
         let parameters = unsafe { stream.codecpar.as_ref() };
 
-        VideoDecoder::open(stream_info.codec(), parameters, accelerator_config)
+        VideoDecoder::open(
+            stream_info.codec(),
+            parameters,
+            target_pixel_formats,
+            accelerator_config,
+        )
     }
 
     /// Keep any streams which match the provided predicate and discard the rest.

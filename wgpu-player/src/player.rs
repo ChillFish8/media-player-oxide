@@ -142,9 +142,11 @@ impl MediaPlayerBuilder {
         let decoder_video = video_stream
             .as_ref()
             .map(|stream| {
-                let decoder = self
-                    .source
-                    .open_video_stream(stream.index, &self.accelerator_config)?;
+                let decoder = self.source.open_video_stream(
+                    stream.index,
+                    &self.accelerator_config,
+                    self.target_pixel_formats,
+                )?;
                 Ok::<_, error::FFmpegError>(TaggedDecoder {
                     stream: stream.clone(),
                     decoder,
