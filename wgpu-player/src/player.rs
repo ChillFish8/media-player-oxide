@@ -11,6 +11,7 @@ use crate::{
     MediaType,
     OutputPixelFormat,
     SampleFormat,
+    SubtitleFormat,
     error,
 };
 
@@ -632,6 +633,21 @@ impl SubtitleFrame {
                 .expect("subtitle frame should have non-null buf ptr")
         }
     }
+
+    pub fn format(&self) -> SubtitleFormat {
+        let subtitle = self.subtitle_frame();
+        SubtitleFormat::try_from_subtitle_format(
+            subtitle.format as ffmpeg::AVSubtitleType,
+        )
+        .expect("unsupported subtitle format provided")
+    }
+
+    /// Returns the subtitle text content if it is
+    /// in a text format.
+    pub fn text(&self) -> Option<String> {
+        let subtitle = self.subtitle_frame();
+        todo!()
+    }
 }
 
 impl Frame for SubtitleFrame {
@@ -683,6 +699,7 @@ impl MediaFrame {
 
     fn copy_hw_to_software(&mut self) -> Result<(), error::FFmpegError> {
         if !self.hw_frames_ctx.is_null() {
+            #[allow(unused_mut)]
             let mut sw_frame = MediaFrame::new()?;
             let result =
                 unsafe { ffmpeg::av_hwframe_transfer_data(sw_frame.ptr, self.ptr, 0) };

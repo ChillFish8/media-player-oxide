@@ -195,3 +195,26 @@ impl SampleFormat {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+/// The subtitle encoding type.
+pub enum SubtitleFormat {
+    /// The subtitle is text.
+    Text,
+    /// The subtitle is ASS.
+    Ass,
+    /// The subtitle is a bitmap image.
+    Bitmap,
+}
+
+impl SubtitleFormat {
+    #[inline]
+    pub(crate) fn try_from_subtitle_format(fmt: ffmpeg::AVSubtitleType) -> Option<Self> {
+        match fmt {
+            ffmpeg::SUBTITLE_TEXT => Some(Self::Text),
+            ffmpeg::SUBTITLE_ASS => Some(Self::Ass),
+            ffmpeg::SUBTITLE_BITMAP => Some(Self::Bitmap),
+            _ => None,
+        }
+    }
+}
