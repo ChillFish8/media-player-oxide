@@ -320,7 +320,7 @@ impl VideoDecoder {
 
     fn ensure_filter_init(&mut self) -> Result<(), error::FFmpegError> {
         if self.filter.is_some() {
-            return Ok(())
+            return Ok(());
         }
         let pipeline = crate::filter::create_video_filter_pipeline(self)?;
         self.filter = Some(pipeline);
@@ -328,7 +328,8 @@ impl VideoDecoder {
     }
 
     fn transfer_decoded_frame_to_filter(&mut self) -> Result<(), error::FFmpegError> {
-        let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), self.frame) };
+        let result =
+            unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), self.frame) };
         error::convert_ff_result(result)?;
 
         self.ensure_filter_init()?;
@@ -390,12 +391,13 @@ impl Decoder for VideoDecoder {
     }
 
     fn flush(&mut self) -> Result<(), error::FFmpegError> {
-        let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), ptr::null_mut()) };
+        let result =
+            unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), ptr::null_mut()) };
         error::convert_ff_result(result)?;
 
         loop {
             match self.transfer_decoded_frame_to_filter() {
-                Err(err) if err.errno() == ffmpeg::AVERROR_EOF => break,
+                Err(err) if err.is_eof() => break,
                 Err(err) => return Err(err),
                 Ok(()) => continue,
             }
@@ -406,15 +408,15 @@ impl Decoder for VideoDecoder {
         Ok(())
     }
 
-    fn write_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+    fn write_packet(
+        &mut self,
+        packet: &mut ffmpeg::AVPacket,
+    ) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), packet) };
         error::convert_ff_result(result)?;
 
         match self.transfer_decoded_frame_to_filter() {
-            Err(err) if !self.has_flushed && err.errno() == ffmpeg::AVERROR_EOF => {
-                Err(error::FFmpegError::from_raw_errno(-(ffmpeg::EAGAIN as i32)))
-            },
-            Err(err) if err.errno() == -(ffmpeg::EAGAIN as i32) => Ok(()),
+            Err(err) if err.needs_data() => Ok(()),
             other => other,
         }
     }

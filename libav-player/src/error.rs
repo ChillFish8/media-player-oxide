@@ -42,7 +42,12 @@ impl FFmpegError {
     pub(crate) fn needs_data(&self) -> bool {
         self.errno() == -(ffmpeg::EAGAIN as i32)
     }
-    
+
+    #[inline]
+    pub(crate) fn is_eof(&self) -> bool {
+        self.errno() == ffmpeg::AVERROR_EOF
+    }
+
     pub(crate) fn from_raw_errno(errno: i32) -> Self {
         let msg = ffmpeg::av_err2str(errno);
         Self { errno, msg }

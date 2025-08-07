@@ -1,8 +1,18 @@
-use libav_player::{DecodedFrame, Frame, InputSource, MediaPlayerBuilder, MediaType, OutputPixelFormat, PlayerError};
+use libav_player::{
+    DecodedFrame,
+    Frame,
+    InputSource,
+    MediaPlayerBuilder,
+    MediaType,
+    OutputPixelFormat,
+    PlayerError,
+};
 
 #[test]
 fn test_video_decode() -> anyhow::Result<()> {
-    unsafe { rusty_ffmpeg::ffi::av_log_set_level(rusty_ffmpeg::ffi::AV_LOG_VERBOSE as i32); };
+    unsafe {
+        rusty_ffmpeg::ffi::av_log_set_level(rusty_ffmpeg::ffi::AV_LOG_VERBOSE as i32);
+    };
     let _ = tracing_subscriber::fmt::try_init();
 
     let source = InputSource::open_file("../samples/idol-x265-120fps.mp4")?;

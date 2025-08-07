@@ -7,7 +7,16 @@ use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::codec::{BaseDecoder, Decoder, VideoDecoder};
 use crate::stream::StreamInfo;
-use crate::{AcceleratorConfig, InputSource, MediaType, OutputPixelFormat, SampleFormat, SubtitleFormat, error, pts_to_duration};
+use crate::{
+    AcceleratorConfig,
+    InputSource,
+    MediaType,
+    OutputPixelFormat,
+    SampleFormat,
+    SubtitleFormat,
+    error,
+    pts_to_duration,
+};
 
 const EAGAIN: i32 = -(ffmpeg::EAGAIN as i32);
 
@@ -289,22 +298,17 @@ impl MediaPlayer {
             let result = self.get_next_frame();
             match result {
                 Ok(frame) => break frame,
-                Err(err) if err.needs_data() => {
-                    if self.end_of_packet_stream {
-                        return Err(error::PlayerError::EndOfStream);
-                    }
-                },
-                Err(err) if err.errno() == ffmpeg::AVERROR_EOF => {
+                Err(err) if err.needs_data() || err.is_eof() => {
                     if self.end_of_packet_stream {
                         tracing::debug!("end of stream processes");
                         return Err(error::PlayerError::EndOfStream);
                     }
-                }
+                },
                 Err(err) => return Err(err.into()),
             }
 
             match self.read_next_packet() {
-                Err(err) if err.errno() == ffmpeg::AVERROR_EOF => {
+                Err(err) if err.is_eof() => {
                     tracing::debug!("end of stream packets");
                     self.end_of_packet_stream = true;
                     self.flush()?;
@@ -341,7 +345,8 @@ impl MediaPlayer {
 
         let start = std::time::Instant::now();
         if let Some(video) = self.decoder_video.as_mut() {
-            let is_ok = ignore_out_of_data_error(video.decoder.decode(&mut self.frame_video))?;
+            let is_ok =
+                ignore_out_of_data_error(video.decoder.decode(&mut self.frame_video))?;
             if is_ok {
                 #[cfg(feature = "trace-hotpath")]
                 tracing::trace!("video frame is ready");
@@ -351,7 +356,8 @@ impl MediaPlayer {
         }
 
         if let Some(audio) = self.decoder_audio.as_mut() {
-            let is_ok = ignore_out_of_data_error(audio.decoder.decode(&mut self.frame_audio))?;
+            let is_ok =
+                ignore_out_of_data_error(audio.decoder.decode(&mut self.frame_audio))?;
             if is_ok {
                 #[cfg(feature = "trace-hotpath")]
                 tracing::trace!("audio frame is ready");
@@ -361,7 +367,9 @@ impl MediaPlayer {
         }
 
         if let Some(subtitle) = self.decoder_subtitle.as_mut() {
-            let is_ok = ignore_out_of_data_error(subtitle.decoder.decode(&mut self.frame_subtitle))?;
+            let is_ok = ignore_out_of_data_error(
+                subtitle.decoder.decode(&mut self.frame_subtitle),
+            )?;
             if is_ok {
                 #[cfg(feature = "trace-hotpath")]
                 tracing::trace!("subtitle frame is ready");
@@ -515,7 +523,7 @@ impl Frame for DecodedFrame {
             DecodedFrame::Subtitle(frame) => frame.pts(),
         }
     }
-    
+
     fn is_hw_backed(&self) -> bool {
         match self {
             DecodedFrame::Video(frame) => frame.is_hw_backed(),
@@ -652,7 +660,11 @@ impl VideoFrame {
 impl Frame for VideoFrame {
     #[inline]
     fn pts(&self) -> Duration {
-        dbg!(self.inner.pts, self.inner.best_effort_timestamp, self.inner.time_base);
+        dbg!(
+            self.inner.pts,
+            self.inner.best_effort_timestamp,
+            self.inner.time_base
+        );
         pts_to_duration(self.inner.pts, self.inner.time_base)
     }
 
@@ -900,9 +912,7 @@ fn ignore_out_of_data_error(
 ) -> Result<bool, error::FFmpegError> {
     match result {
         Ok(()) => Ok(true),
-        Err(err) if err.needs_data() => {
-            Ok(false)
-        },
+        Err(err) if err.needs_data() => Ok(false),
         Err(err) => Err(err),
     }
 }

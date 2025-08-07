@@ -1,7 +1,8 @@
 use std::time::Duration;
+
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::{pts_to_duration, MediaType};
+use crate::{MediaType, pts_to_duration};
 
 #[derive(Clone)]
 /// A single immutable audio, video or subtitle stream from an [InputSource](crate::InputSource).

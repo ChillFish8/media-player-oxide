@@ -7,6 +7,7 @@ mod player;
 mod stream;
 
 use std::time::Duration;
+
 use rusty_ffmpeg::ffi as ffmpeg;
 
 pub use self::accelerator::{Accelerator, AcceleratorConfig};

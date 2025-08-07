@@ -1,5 +1,11 @@
-use libav_player::{Frame, InputSource, MediaPlayerBuilder, MediaType, OutputPixelFormat, PlayerError};
-
+use libav_player::{
+    Frame,
+    InputSource,
+    MediaPlayerBuilder,
+    MediaType,
+    OutputPixelFormat,
+    PlayerError,
+};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
