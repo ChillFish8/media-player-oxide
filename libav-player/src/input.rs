@@ -191,7 +191,7 @@ impl InputSource {
         let stream = unsafe { &*streams[index] };
         let parameters = unsafe { stream.codecpar.as_ref() };
 
-        BaseDecoder::open(stream_info.codec(), parameters)
+        BaseDecoder::open(stream_info.codec(), stream_info, parameters)
     }
 
     /// A specialised variant of `open_stream` for video decoding using
@@ -210,6 +210,7 @@ impl InputSource {
 
         VideoDecoder::open(
             stream_info.codec(),
+            stream_info,
             parameters,
             target_pixel_formats,
             accelerator_config,
@@ -287,7 +288,7 @@ impl Drop for InputSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::{FrameRate, Resolution};
+    use crate::stream::{Fraction, Resolution};
 
     #[test]
     fn test_direct_file_open() {
@@ -337,7 +338,7 @@ mod tests {
                 height: 1080
             })
         );
-        assert_eq!(stream.framerate, FrameRate::new(25, 1));
+        assert_eq!(stream.framerate, Fraction::new(25, 1));
         assert_eq!(stream.media_type, MediaType::Video);
 
         let stream = source
@@ -347,7 +348,7 @@ mod tests {
         assert_eq!(stream.index, 1);
         assert_eq!(stream.codec_name, "aac");
         assert_eq!(stream.bitrate, Some(253));
-        assert_eq!(stream.framerate, FrameRate::new(0, 0));
+        assert_eq!(stream.framerate, Fraction::new(0, 0));
         assert_eq!(stream.media_type, MediaType::Audio);
 
         let stream = source

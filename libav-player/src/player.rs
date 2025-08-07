@@ -1,5 +1,4 @@
 use std::fmt::Formatter;
-use std::io::Write;
 use std::mem;
 use std::time::Duration;
 
@@ -660,11 +659,6 @@ impl VideoFrame {
 impl Frame for VideoFrame {
     #[inline]
     fn pts(&self) -> Duration {
-        dbg!(
-            self.inner.pts,
-            self.inner.best_effort_timestamp,
-            self.inner.time_base
-        );
         pts_to_duration(self.inner.pts, self.inner.time_base)
     }
 

@@ -4,6 +4,7 @@ use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::accelerator::{Accelerator, AcceleratorConfig};
 use crate::filter::VideoFilterPipeline;
+use crate::stream::StreamInfo;
 use crate::{OutputPixelFormat, error};
 
 /// Find a ffmpeg codec by name.
@@ -36,7 +37,10 @@ pub(crate) fn find_decoder_by_id(
 /// The decoder processes incoming packets and produces media frames.
 pub(crate) trait Decoder: Sized {
     /// Create a new decoder using the target codec.
-    fn create(codec: &'static ffmpeg::AVCodec) -> Result<Self, error::FFmpegError>;
+    fn create(
+        codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
+    ) -> Result<Self, error::FFmpegError>;
 
     /// Return a mutable reference to the internal decoder context.
     fn as_mut_ctx(&mut self) -> &mut ffmpeg::AVCodecContext;
@@ -85,7 +89,14 @@ pub(crate) trait Decoder: Sized {
     fn decode(&mut self, frame: &mut ffmpeg::AVFrame) -> Result<(), error::FFmpegError> {
         let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), frame) };
         error::convert_ff_result(result)?;
+        self.apply_context_to_frame(frame);
         Ok(())
+    }
+
+    fn apply_context_to_frame(&self, frame: &mut ffmpeg::AVFrame) {
+        // Apply context to frame, not entirely sure why the filters do not transfer this.
+        let ctx = self.as_ctx();
+        frame.time_base = ctx.time_base;
     }
 }
 
@@ -105,9 +116,10 @@ impl BaseDecoder {
     /// Open a new [BaseDecoder] using the target codec and codec parameters.
     pub(crate) fn open(
         codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
         codec_params: Option<&ffmpeg::AVCodecParameters>,
     ) -> Result<Self, error::FFmpegError> {
-        let mut decoder = Self::create(codec)?;
+        let mut decoder = Self::create(codec, stream_info)?;
         if let Some(codec_params) = codec_params {
             decoder.copy_codec_params(codec_params)?;
         }
@@ -117,7 +129,10 @@ impl BaseDecoder {
 }
 
 impl Decoder for BaseDecoder {
-    fn create(codec: &'static ffmpeg::AVCodec) -> Result<Self, error::FFmpegError> {
+    fn create(
+        codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
+    ) -> Result<Self, error::FFmpegError> {
         let context = unsafe { ffmpeg::avcodec_alloc_context3(codec) };
         if context.is_null() {
             return Err(error::FFmpegError::custom(
@@ -127,11 +142,16 @@ impl Decoder for BaseDecoder {
 
         tracing::debug!("created decoder");
 
-        Ok(Self {
+        let mut decoder = Self {
             ctx: context,
             codec,
             is_open: false,
-        })
+        };
+
+        let ctx = decoder.as_mut_ctx();
+        ctx.time_base = stream_info.time_base.to_av_rational();
+
+        Ok(decoder)
     }
 
     fn as_mut_ctx(&mut self) -> &mut ffmpeg::AVCodecContext {
@@ -192,6 +212,7 @@ impl VideoDecoder {
     /// The decoder is automatically opened and ready once returned.
     pub(crate) fn open(
         codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
         codec_params: Option<&ffmpeg::AVCodecParameters>,
         output_pixel_format: Vec<OutputPixelFormat>,
         accelerator_config: &AcceleratorConfig,
@@ -206,6 +227,7 @@ impl VideoDecoder {
 
             let result = create_accelerated_decoder(
                 codec,
+                stream_info.clone(),
                 *accelerator,
                 accelerator_config.device_target(),
             );
@@ -226,7 +248,7 @@ impl VideoDecoder {
             return Ok(decoder);
         }
 
-        let mut decoder = Self::create(codec)?;
+        let mut decoder = Self::create(codec, stream_info)?;
         if let Some(codec_params) = codec_params {
             decoder.copy_codec_params(codec_params)?;
         }
@@ -292,12 +314,10 @@ impl VideoDecoder {
         write!(args, "width={}", ctx.width).unwrap();
         write!(args, ":height={}", ctx.height).unwrap();
         write!(args, ":pix_fmt={}", self.pix_fmt()).unwrap();
-        // TODO: This isn't technically correct, but I am not sure why this is needed or if it
-        //       is actually used at all?
         write!(
             args,
             ":time_base={}/{}",
-            ctx.framerate.den, ctx.framerate.num
+            ctx.framerate.num, ctx.framerate.den,
         )
         .unwrap();
         write!(
@@ -343,8 +363,11 @@ impl VideoDecoder {
 }
 
 impl Decoder for VideoDecoder {
-    fn create(codec: &'static ffmpeg::AVCodec) -> Result<Self, error::FFmpegError> {
-        let base_decoder = BaseDecoder::create(codec)?;
+    fn create(
+        codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
+    ) -> Result<Self, error::FFmpegError> {
+        let base_decoder = BaseDecoder::create(codec, stream_info)?;
 
         let frame = unsafe { ffmpeg::av_frame_alloc() };
         if frame.is_null() {
@@ -424,7 +447,9 @@ impl Decoder for VideoDecoder {
     /// Attempt to decode a new frame and write it to the provided [ffmpeg::AVFrame].
     fn decode(&mut self, frame: &mut ffmpeg::AVFrame) -> Result<(), error::FFmpegError> {
         if let Some(filter) = self.filter.as_mut() {
-            filter.read_frame(frame)
+            filter.read_frame(frame)?;
+            self.apply_context_to_frame(frame);
+            Ok(())
         } else {
             Err(error::FFmpegError::from_raw_errno(-(ffmpeg::EAGAIN as i32)))
         }
@@ -448,6 +473,7 @@ impl Drop for VideoDecoder {
 /// or not available at all.
 fn create_accelerated_decoder(
     mut codec: &'static ffmpeg::AVCodec,
+    stream_info: StreamInfo,
     target_accelerator: Accelerator,
     target_device: Option<&std::ffi::CStr>,
 ) -> Result<Option<VideoDecoder>, error::FFmpegError> {
@@ -463,7 +489,7 @@ fn create_accelerated_decoder(
         }
     }
 
-    let mut codec = VideoDecoder::create(codec)?;
+    let mut codec = VideoDecoder::create(codec, stream_info)?;
     let mut hw_device = ptr::null_mut();
 
     if !hw_config.is_null() {
@@ -529,7 +555,9 @@ fn find_accelerator_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MediaType;
     use crate::accelerator::AcceleratorConfig;
+    use crate::stream::Fraction;
 
     #[test]
     fn test_format_codec_name_with_accelerator() {
@@ -545,10 +573,24 @@ mod tests {
     fn test_create_video_decoder(#[case] codec_name: &str) {
         let _ = tracing_subscriber::fmt::try_init();
 
+        let stream_info = StreamInfo {
+            media_type: MediaType::Video,
+            index: 0,
+            framerate: Fraction::new(25, 1),
+            time_base: Fraction::new(25, 1),
+            resolution: None,
+            num_frames: 0,
+            duration: Default::default(),
+            bitrate: None,
+            codec_name: "hevc".to_string(),
+            codec_id: 0,
+        };
+
         let codec = find_decoder_by_name(codec_name).unwrap();
         let config = AcceleratorConfig::default();
-        let video_decoder = VideoDecoder::open(codec, None, Vec::new(), &config)
-            .expect("accelerated codec creation failed");
+        let video_decoder =
+            VideoDecoder::open(codec, stream_info, None, Vec::new(), &config)
+                .expect("accelerated codec creation failed");
         assert!(video_decoder.is_open());
         drop(video_decoder);
     }

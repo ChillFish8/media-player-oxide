@@ -15,7 +15,7 @@ fn test_video_decode() -> anyhow::Result<()> {
     };
     let _ = tracing_subscriber::fmt::try_init();
 
-    let source = InputSource::open_file("../samples/idol-x265-120fps.mp4")?;
+    let source = InputSource::open_file("../media/test.mp4")?;
 
     let stream = source.find_best_stream(MediaType::Video, None)?.unwrap();
     dbg!(stream);

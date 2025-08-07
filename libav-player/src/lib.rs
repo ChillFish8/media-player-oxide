@@ -246,10 +246,8 @@ pub(crate) fn pts_to_duration(ts: i64, time_base: ffmpeg::AVRational) -> Duratio
     if ts == ffmpeg::AV_NOPTS_VALUE {
         Duration::ZERO
     } else {
-        let micros = (ts as u64)
-            .wrapping_mul(time_base.num as u64)
-            .wrapping_mul(1_000_000)
-            .wrapping_div(time_base.den as u64);
-        Duration::from_micros(micros)
+        let secs = (ts as f64 * time_base.num as f64) / time_base.den as f64;
+        Duration::from_secs_f64(secs)
     }
 }
+

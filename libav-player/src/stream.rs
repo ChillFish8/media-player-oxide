@@ -12,7 +12,9 @@ pub struct StreamInfo {
     /// Returns the index position of the stream.
     pub index: usize,
     /// Returns the frame rate of the stream.
-    pub framerate: FrameRate,
+    pub framerate: Fraction,
+    /// Returns the time base of the stream.
+    pub time_base: Fraction,
     /// Returns the resolution of the stream, providing it is a
     /// video stream.
     pub resolution: Option<Resolution>,
@@ -55,10 +57,12 @@ impl StreamInfo {
 
         let media_type = MediaType::from(codec_params.codec_type);
         let index = stream.index as usize;
-        let framerate = FrameRate::new(
+        let framerate = Fraction::new(
             stream.avg_frame_rate.num as usize,
             stream.avg_frame_rate.den as usize,
         );
+        let time_base =
+            Fraction::new(stream.time_base.num as usize, stream.time_base.den as usize);
         let num_frames = stream.nb_frames as usize;
         let duration = pts_to_duration(stream.duration, stream.time_base);
 
@@ -88,6 +92,7 @@ impl StreamInfo {
             media_type,
             index,
             framerate,
+            time_base,
             num_frames,
             duration,
             resolution,
@@ -104,15 +109,15 @@ impl StreamInfo {
 }
 
 #[derive(Copy, Clone)]
-/// The frame rate of a given stream.
+/// The fractional rate of a given stream.
 ///
 /// This is represented in the form of a numerator and a denominator.
-pub struct FrameRate {
+pub struct Fraction {
     numerator: usize,
     denominator: usize,
 }
 
-impl std::fmt::Debug for FrameRate {
+impl std::fmt::Debug for Fraction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -124,8 +129,8 @@ impl std::fmt::Debug for FrameRate {
     }
 }
 
-impl FrameRate {
-    /// Creates a new [FrameRate] using the given fractional components.
+impl Fraction {
+    /// Creates a new [Fraction] using the given fractional components.
     pub(crate) fn new(numerator: usize, denominator: usize) -> Self {
         Self {
             numerator,
@@ -150,11 +155,19 @@ impl FrameRate {
     pub fn denominator(&self) -> usize {
         self.denominator
     }
+
+    #[inline]
+    pub(crate) fn to_av_rational(&self) -> ffmpeg::AVRational {
+        ffmpeg::AVRational {
+            num: self.numerator as i32,
+            den: self.denominator as i32,
+        }
+    }
 }
 
-impl Eq for FrameRate {}
+impl Eq for Fraction {}
 
-impl PartialEq for FrameRate {
+impl PartialEq for Fraction {
     fn eq(&self, other: &Self) -> bool {
         self.numerator() == other.numerator()
             && self.denominator() == other.denominator()
