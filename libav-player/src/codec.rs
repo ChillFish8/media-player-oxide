@@ -65,6 +65,12 @@ pub(crate) trait Decoder: Sized {
     /// Open and initialise the decoder.
     fn open(&mut self) -> Result<(), error::FFmpegError>;
 
+    /// Signal to the decoder that all packets have been read,
+    /// and it should flush any remaining data.
+    fn flush(&mut self) -> Result<(), error::FFmpegError> {
+        Ok(())
+    }
+
     /// Push packet data into the decoder.
     fn write_packet(
         &mut self,
@@ -171,6 +177,8 @@ pub(crate) struct VideoDecoder {
     accelerator: Option<Accelerator>,
     output_pixel_formats: Vec<OutputPixelFormat>,
     filter: Option<VideoFilterPipeline>,
+    frame: *mut ffmpeg::AVFrame,
+    has_flushed: bool,
 }
 
 impl VideoDecoder {
@@ -189,7 +197,7 @@ impl VideoDecoder {
         accelerator_config: &AcceleratorConfig,
     ) -> Result<Self, error::FFmpegError> {
         assert!(
-            output_pixel_format.is_empty(),
+            !output_pixel_format.is_empty(),
             "at least one pixel format must be provided"
         );
 
@@ -214,6 +222,7 @@ impl VideoDecoder {
                 decoder.copy_codec_params(codec_params)?;
             }
             decoder.open()?;
+            decoder.output_pixel_formats = output_pixel_format;
             return Ok(decoder);
         }
 
@@ -310,8 +319,24 @@ impl VideoDecoder {
     }
 
     fn ensure_filter_init(&mut self) -> Result<(), error::FFmpegError> {
+        if self.filter.is_some() {
+            return Ok(())
+        }
         let pipeline = crate::filter::create_video_filter_pipeline(self)?;
         self.filter = Some(pipeline);
+        Ok(())
+    }
+
+    fn transfer_decoded_frame_to_filter(&mut self) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), self.frame) };
+        error::convert_ff_result(result)?;
+
+        self.ensure_filter_init()?;
+        if let Some(filter) = self.filter.as_mut() {
+            let frame = unsafe { &mut *self.frame };
+            filter.write_frame(frame)?;
+        }
+
         Ok(())
     }
 }
@@ -319,11 +344,19 @@ impl VideoDecoder {
 impl Decoder for VideoDecoder {
     fn create(codec: &'static ffmpeg::AVCodec) -> Result<Self, error::FFmpegError> {
         let base_decoder = BaseDecoder::create(codec)?;
+
+        let frame = unsafe { ffmpeg::av_frame_alloc() };
+        if frame.is_null() {
+            return Err(error::FFmpegError::custom("unable to allocate frame"));
+        }
+
         Ok(Self {
             base_decoder,
             accelerator: None,
             filter: None,
             output_pixel_formats: Vec::new(),
+            frame,
+            has_flushed: false,
         })
     }
 
@@ -356,11 +389,54 @@ impl Decoder for VideoDecoder {
         Ok(())
     }
 
+    fn flush(&mut self) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), ptr::null_mut()) };
+        error::convert_ff_result(result)?;
+
+        loop {
+            match self.transfer_decoded_frame_to_filter() {
+                Err(err) if err.errno() == ffmpeg::AVERROR_EOF => break,
+                Err(err) => return Err(err),
+                Ok(()) => continue,
+            }
+        }
+
+        self.has_flushed = true;
+
+        Ok(())
+    }
+
+    fn write_packet(&mut self, packet: &mut ffmpeg::AVPacket) -> Result<(), error::FFmpegError> {
+        let result = unsafe { ffmpeg::avcodec_send_packet(self.as_mut_ctx(), packet) };
+        error::convert_ff_result(result)?;
+
+        match self.transfer_decoded_frame_to_filter() {
+            Err(err) if !self.has_flushed && err.errno() == ffmpeg::AVERROR_EOF => {
+                Err(error::FFmpegError::from_raw_errno(-(ffmpeg::EAGAIN as i32)))
+            },
+            Err(err) if err.errno() == -(ffmpeg::EAGAIN as i32) => Ok(()),
+            other => other,
+        }
+    }
+
     /// Attempt to decode a new frame and write it to the provided [ffmpeg::AVFrame].
     fn decode(&mut self, frame: &mut ffmpeg::AVFrame) -> Result<(), error::FFmpegError> {
-        let result = unsafe { ffmpeg::avcodec_receive_frame(self.as_mut_ctx(), frame) };
-        error::convert_ff_result(result)?;
-        Ok(())
+        if let Some(filter) = self.filter.as_mut() {
+            filter.read_frame(frame)
+        } else {
+            Err(error::FFmpegError::from_raw_errno(-(ffmpeg::EAGAIN as i32)))
+        }
+    }
+}
+
+impl Drop for VideoDecoder {
+    fn drop(&mut self) {
+        if !self.frame.is_null() {
+            unsafe {
+                ffmpeg::av_frame_unref(self.frame);
+                ffmpeg::av_frame_free(&raw mut self.frame);
+            };
+        }
     }
 }
 

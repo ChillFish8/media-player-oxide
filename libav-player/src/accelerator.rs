@@ -1,7 +1,5 @@
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::OutputPixelFormat;
-
 #[cfg(target_os = "linux")]
 /// The default accelerator affinity for a Linux based distribution.
 ///
@@ -240,7 +238,7 @@ impl AcceleratorConfig {
 macro_rules! define_pix_fmt_selector {
     ($name:ident, $target:expr) => {
         extern "C" fn $name(
-            ctx: *mut ffmpeg::AVCodecContext,
+            _ctx: *mut ffmpeg::AVCodecContext,
             mut pix_fmts: *const ffmpeg::AVPixelFormat,
         ) -> ffmpeg::AVPixelFormat {
             loop {

@@ -1,6 +1,7 @@
+use std::time::Duration;
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::MediaType;
+use crate::{pts_to_duration, MediaType};
 
 #[derive(Clone)]
 /// A single immutable audio, video or subtitle stream from an [InputSource](crate::InputSource).
@@ -14,6 +15,10 @@ pub struct StreamInfo {
     /// Returns the resolution of the stream, providing it is a
     /// video stream.
     pub resolution: Option<Resolution>,
+    /// Returns the total number of frames in the stream.
+    pub num_frames: usize,
+    /// The estimated duration of the stream.
+    pub duration: Duration,
     /// Returns the bitrate of the stream in kilobits per second if available.
     ///
     /// Some containers like MKV might not make this available without probing the stream
@@ -30,6 +35,8 @@ impl std::fmt::Debug for StreamInfo {
             .field("media_type", &self.media_type)
             .field("index", &self.index)
             .field("framerate", &self.framerate)
+            .field("num_frames", &self.num_frames)
+            .field("duration", &self.duration)
             .field("resolution", &self.resolution)
             .field("bitrate", &self.bitrate)
             .field("codec_name", &self.codec_name)
@@ -51,6 +58,8 @@ impl StreamInfo {
             stream.avg_frame_rate.num as usize,
             stream.avg_frame_rate.den as usize,
         );
+        let num_frames = stream.nb_frames as usize;
+        let duration = pts_to_duration(stream.duration, stream.time_base);
 
         let mut resolution = None;
         if media_type == MediaType::Video {
@@ -78,6 +87,8 @@ impl StreamInfo {
             media_type,
             index,
             framerate,
+            num_frames,
+            duration,
             resolution,
             bitrate,
             codec_name,

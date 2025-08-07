@@ -6,12 +6,21 @@ mod input;
 mod player;
 mod stream;
 
+use std::time::Duration;
 use rusty_ffmpeg::ffi as ffmpeg;
 
 pub use self::accelerator::{Accelerator, AcceleratorConfig};
 pub use self::error::{FFmpegError, PlayerError, Result};
 pub use self::input::InputSource;
-pub use self::player::{DecodedFrame, MediaPlayer, MediaPlayerBuilder};
+pub use self::player::{
+    AudioFrame,
+    DecodedFrame,
+    Frame,
+    MediaPlayer,
+    MediaPlayerBuilder,
+    SubtitleFrame,
+    VideoFrame,
+};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MediaType {
@@ -230,4 +239,16 @@ pub(crate) fn join_pixel_formats(formats: &[OutputPixelFormat]) -> String {
         write!(output, "{}", format.to_filter_name()).unwrap();
     }
     output
+}
+
+pub(crate) fn pts_to_duration(ts: i64, time_base: ffmpeg::AVRational) -> Duration {
+    if ts == ffmpeg::AV_NOPTS_VALUE {
+        Duration::ZERO
+    } else {
+        let micros = (ts as u64)
+            .wrapping_mul(time_base.num as u64)
+            .wrapping_mul(1_000_000)
+            .wrapping_div(time_base.den as u64);
+        Duration::from_micros(micros)
+    }
 }

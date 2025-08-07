@@ -363,44 +363,4 @@ mod tests {
             "no video stream should exist at user provided index"
         );
     }
-
-    // #[test]
-    // fn test_opening_decoder() {
-    //     let source = InputSource::open_file("../media/test.mp4").unwrap();
-    //
-    //     let stream = source
-    //         .find_best_stream(MediaType::Video, None)
-    //         .expect("video stream exists with known decoder")
-    //         .expect("video stream exists");
-    //
-    //     let accelerator_config = AcceleratorConfig::default();
-    //     let decoder = stream
-    //         .open_decoder(&accelerator_config)
-    //         .expect("valid decoder should be found and opened");
-    // }
-    //
-    // #[test]
-    // fn test_input_source_read() {
-    //     let mut source = InputSource::open_file("../media/test.mp4").unwrap();
-    //
-    //     let stream = source
-    //         .find_best_stream(MediaType::Video, None)
-    //         .expect("video stream exists with known decoder")
-    //         .expect("video stream exists");
-    //
-    //     let accelerator_config = AcceleratorConfig::default();
-    //     let mut decoder = stream
-    //         .open_decoder(&accelerator_config)
-    //         .expect("valid decoder should be found and opened");
-    //
-    //     let mut frames = source
-    //         .read_frames()
-    //         .expect("begin reading frames");
-    //
-    //     while let Some(packet) = frames.next_packet() {
-    //         if packet.stream_index == stream.index() as i32 {
-    //             decoder.decode(packet).unwrap();
-    //         }
-    //     }
-    // }
 }

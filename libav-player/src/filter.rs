@@ -4,7 +4,7 @@ use std::ptr;
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::codec::VideoDecoder;
-use crate::{OutputPixelFormat, error};
+use crate::error;
 
 /// Creates the video decoder filter pipeline.
 ///
