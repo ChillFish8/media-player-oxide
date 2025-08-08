@@ -8,6 +8,7 @@
       <sourceFolder url="file://$MODULE_DIR$/libav-player/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/libav-player/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/libav-player-demo/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/libav-player/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

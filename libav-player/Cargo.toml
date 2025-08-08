@@ -23,3 +23,6 @@ link-vcpkg-ffmpeg = ["rusty_ffmpeg/link_vcpkg_ffmpeg"]
 # Enable debugging tracing on the hot loop of the player
 # DO NOT ENABLE THIS OUTSIDE OF DEBUGGING.
 trace-hotpath = []
+
+[[example]]
+name = "basic_player"
