@@ -250,4 +250,3 @@ pub(crate) fn pts_to_duration(ts: i64, time_base: ffmpeg::AVRational) -> Duratio
         Duration::from_secs_f64(secs)
     }
 }
-

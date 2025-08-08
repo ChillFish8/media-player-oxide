@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::codec::{BaseDecoder, VideoDecoder};
+use crate::codec::{AudioDecoder, SubtitleDecoder, VideoDecoder};
 use crate::stream::StreamInfo;
 use crate::{AcceleratorConfig, MediaType, OutputPixelFormat, error};
 
@@ -180,18 +180,32 @@ impl InputSource {
         Ok(Some(stream))
     }
 
-    /// Open a target stream index for decoding.
-    pub(crate) fn open_stream(
+    /// Open a target audio stream index for decoding.
+    pub(crate) fn open_audio_stream(
         &self,
         index: usize,
-    ) -> Result<BaseDecoder, error::FFmpegError> {
+    ) -> Result<AudioDecoder, error::FFmpegError> {
         let stream_info = self.stream(index);
         let streams = self.streams();
 
         let stream = unsafe { &*streams[index] };
         let parameters = unsafe { stream.codecpar.as_ref() };
 
-        BaseDecoder::open(stream_info.codec(), stream_info, parameters)
+        AudioDecoder::open(stream_info.codec(), stream_info, parameters)
+    }
+
+    /// Open a target subtitle stream index for decoding.
+    pub(crate) fn open_subtitle_stream(
+        &self,
+        index: usize,
+    ) -> Result<SubtitleDecoder, error::FFmpegError> {
+        let stream_info = self.stream(index);
+        let streams = self.streams();
+
+        let stream = unsafe { &*streams[index] };
+        let parameters = unsafe { stream.codecpar.as_ref() };
+
+        SubtitleDecoder::open(stream_info.codec(), stream_info, parameters)
     }
 
     /// A specialised variant of `open_stream` for video decoding using

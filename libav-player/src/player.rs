@@ -1,11 +1,11 @@
 use std::fmt::Formatter;
-use std::mem;
 use std::time::Duration;
+use std::{mem, ptr};
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
-use crate::codec::{BaseDecoder, Decoder, VideoDecoder};
-use crate::stream::StreamInfo;
+use crate::codec::{AudioDecoder, Decoder, SubtitleDecoder, VideoDecoder};
+use crate::stream::{Fraction, StreamInfo};
 use crate::{
     AcceleratorConfig,
     InputSource,
@@ -159,7 +159,7 @@ impl MediaPlayerBuilder {
         let decoder_audio = audio_stream
             .as_ref()
             .map(|stream| {
-                let decoder = self.source.open_stream(stream.index)?;
+                let decoder = self.source.open_audio_stream(stream.index)?;
                 Ok::<_, error::FFmpegError>(TaggedDecoder {
                     stream: stream.clone(),
                     decoder,
@@ -170,7 +170,7 @@ impl MediaPlayerBuilder {
         let decoder_subtitle = subtitle_stream
             .as_ref()
             .map(|stream| {
-                let decoder = self.source.open_stream(stream.index)?;
+                let decoder = self.source.open_subtitle_stream(stream.index)?;
                 Ok::<_, error::FFmpegError>(TaggedDecoder {
                     stream: stream.clone(),
                     decoder,
@@ -193,11 +193,11 @@ impl MediaPlayerBuilder {
             decoder_subtitle,
 
             packet: MediaPacket::new()?,
-            frame_video: MediaFrame::new()?,
+            frame_video: MediaRawFrame::new()?,
             frame_video_ready: None,
-            frame_audio: MediaFrame::new()?,
+            frame_audio: MediaRawFrame::new()?,
             frame_audio_ready: None,
-            frame_subtitle: MediaFrame::new()?,
+            frame_subtitle: SubtitleRawFrame::new(),
             frame_subtitle_ready: None,
 
             end_of_packet_stream: false,
@@ -217,24 +217,24 @@ pub struct MediaPlayer {
     source: InputSource,
 
     decoder_video: Option<TaggedDecoder<VideoDecoder>>,
-    decoder_audio: Option<TaggedDecoder<BaseDecoder>>,
-    decoder_subtitle: Option<TaggedDecoder<BaseDecoder>>,
+    decoder_audio: Option<TaggedDecoder<AudioDecoder>>,
+    decoder_subtitle: Option<TaggedDecoder<SubtitleDecoder>>,
 
     packet: MediaPacket,
     /// A frame holding video data.
-    frame_video: MediaFrame,
+    frame_video: MediaRawFrame,
     /// If `Some`, signals if the video frame already has valid data
     /// ready and provides the PTS timestamp which can be used for
     /// priority.
     frame_video_ready: Option<i64>,
     /// A frame holding audio data.
-    frame_audio: MediaFrame,
+    frame_audio: MediaRawFrame,
     /// If `Some`, signals if the audio frame already has valid data
     /// ready and provides the PTS timestamp which can be used for
     /// priority.
     frame_audio_ready: Option<i64>,
     /// A frame holding subtitle data.
-    frame_subtitle: MediaFrame,
+    frame_subtitle: SubtitleRawFrame,
     /// If `Some`, signals if the subtitle frame already has valid data
     /// ready and provides the PTS timestamp which can be used for
     /// priority.
@@ -396,7 +396,7 @@ impl MediaPlayer {
             && video_ready_ts <= subtitle_ready_ts
             && video_ready_ts != i64::MAX
         {
-            let blank_frame = MediaFrame::new()?;
+            let blank_frame = MediaRawFrame::new()?;
             self.frame_video_ready = None;
             let ready_frame = mem::replace(&mut self.frame_video, blank_frame);
             Ok(Some(DecodedFrame::Video(VideoFrame { inner: ready_frame })))
@@ -404,7 +404,7 @@ impl MediaPlayer {
             && audio_ready_ts <= subtitle_ready_ts
             && audio_ready_ts != i64::MAX
         {
-            let blank_frame = MediaFrame::new()?;
+            let blank_frame = MediaRawFrame::new()?;
             self.frame_audio_ready = None;
             let ready_frame = mem::replace(&mut self.frame_audio, blank_frame);
             Ok(Some(DecodedFrame::Audio(AudioFrame { inner: ready_frame })))
@@ -412,9 +412,9 @@ impl MediaPlayer {
             && subtitle_ready_ts <= audio_ready_ts
             && subtitle_ready_ts != i64::MAX
         {
-            let blank_frame = MediaFrame::new()?;
             self.frame_subtitle_ready = None;
-            let ready_frame = mem::replace(&mut self.frame_subtitle, blank_frame);
+            let ready_frame =
+                mem::replace(&mut self.frame_subtitle, SubtitleRawFrame::new());
             Ok(Some(DecodedFrame::Subtitle(SubtitleFrame {
                 inner: ready_frame,
             })))
@@ -537,7 +537,7 @@ impl Frame for DecodedFrame {
 /// In the pixel format of one of the target [OutputPixelFormat] formats
 /// you configure on the player.
 pub struct VideoFrame {
-    inner: MediaFrame,
+    inner: MediaRawFrame,
 }
 
 impl std::fmt::Debug for VideoFrame {
@@ -670,7 +670,7 @@ impl Frame for VideoFrame {
 
 /// A decoded audio frame.
 pub struct AudioFrame {
-    inner: MediaFrame,
+    inner: MediaRawFrame,
 }
 
 impl std::fmt::Debug for AudioFrame {
@@ -770,7 +770,7 @@ impl Frame for AudioFrame {
 ///
 /// This can be in either text/ASS format or bitmap format.
 pub struct SubtitleFrame {
-    inner: MediaFrame,
+    inner: SubtitleRawFrame,
 }
 
 impl std::fmt::Debug for SubtitleFrame {
@@ -780,22 +780,9 @@ impl std::fmt::Debug for SubtitleFrame {
 }
 
 impl SubtitleFrame {
-    fn subtitle_frame(&self) -> &ffmpeg::AVSubtitle {
-        unsafe {
-            // Based on the source of subtitle_wrap_frame for the new way of handling
-            // subtitles from a AVFrame.
-            let subtitle_ptr: *const ffmpeg::AVSubtitle =
-                (*self.inner.buf[0]).data.cast();
-            subtitle_ptr
-                .as_ref()
-                .expect("subtitle frame should have non-null buf ptr")
-        }
-    }
-
     pub fn format(&self) -> SubtitleFormat {
-        let subtitle = self.subtitle_frame();
         SubtitleFormat::try_from_subtitle_format(
-            subtitle.format as ffmpeg::AVSubtitleType,
+            self.inner.format as ffmpeg::AVSubtitleType,
         )
         .expect("unsupported subtitle format provided")
     }
@@ -803,18 +790,17 @@ impl SubtitleFrame {
     /// Returns the subtitle text content if it is
     /// in a text format.
     pub fn text(&self) -> Option<String> {
-        let subtitle = self.subtitle_frame();
         todo!()
     }
 }
 
 impl Frame for SubtitleFrame {
     fn pts(&self) -> Duration {
-        pts_to_duration(self.inner.pts, self.inner.time_base)
+        Duration::from_secs(0)
     }
 
     fn is_hw_backed(&self) -> bool {
-        !self.inner.hw_frames_ctx.is_null()
+        false
     }
 }
 
@@ -841,11 +827,11 @@ pub struct PlayerStatistics {
     pub frames_total_time: Duration,
 }
 
-struct MediaFrame {
+struct MediaRawFrame {
     ptr: *mut ffmpeg::AVFrame,
 }
 
-impl MediaFrame {
+impl MediaRawFrame {
     fn new() -> Result<Self, error::FFmpegError> {
         let packet = unsafe { ffmpeg::av_frame_alloc() };
         if packet.is_null() {
@@ -858,7 +844,7 @@ impl MediaFrame {
     fn copy_hw_to_software(&mut self) -> Result<(), error::FFmpegError> {
         if !self.hw_frames_ctx.is_null() {
             #[allow(unused_mut)]
-            let mut sw_frame = MediaFrame::new()?;
+            let mut sw_frame = MediaRawFrame::new()?;
             let result =
                 unsafe { ffmpeg::av_hwframe_transfer_data(sw_frame.ptr, self.ptr, 0) };
             error::convert_ff_result(result)?;
@@ -872,7 +858,7 @@ impl MediaFrame {
     }
 }
 
-impl std::ops::Deref for MediaFrame {
+impl std::ops::Deref for MediaRawFrame {
     type Target = ffmpeg::AVFrame;
 
     fn deref(&self) -> &Self::Target {
@@ -880,18 +866,57 @@ impl std::ops::Deref for MediaFrame {
     }
 }
 
-impl std::ops::DerefMut for MediaFrame {
+impl std::ops::DerefMut for MediaRawFrame {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.ptr }
     }
 }
 
-impl Drop for MediaFrame {
+impl Drop for MediaRawFrame {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             self.reset();
             unsafe { ffmpeg::av_frame_free(&raw mut self.ptr) };
         }
+    }
+}
+
+struct SubtitleRawFrame {
+    inner: ffmpeg::AVSubtitle,
+}
+
+impl SubtitleRawFrame {
+    fn new() -> Self {
+        Self {
+            inner: ffmpeg::AVSubtitle {
+                format: 0,
+                start_display_time: 0,
+                end_display_time: 0,
+                num_rects: 0,
+                rects: ptr::null_mut(),
+                pts: 0,
+            },
+        }
+    }
+}
+
+impl std::ops::Deref for SubtitleRawFrame {
+    type Target = ffmpeg::AVSubtitle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for SubtitleRawFrame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl Drop for SubtitleRawFrame {
+    fn drop(&mut self) {
+        unsafe { ffmpeg::avsubtitle_free(&raw mut self.inner) };
     }
 }
 
