@@ -78,6 +78,27 @@ impl VideoDecoder {
         Ok(decoder)
     }
 
+    fn create(
+        codec: &'static ffmpeg::AVCodec,
+        stream_info: StreamInfo,
+    ) -> Result<Self, error::FFmpegError> {
+        let base_decoder = BaseDecoder::create(codec, stream_info)?;
+
+        let frame = unsafe { ffmpeg::av_frame_alloc() };
+        if frame.is_null() {
+            return Err(error::FFmpegError::custom("unable to allocate frame"));
+        }
+
+        Ok(Self {
+            base_decoder,
+            accelerator: None,
+            filter: None,
+            output_pixel_formats: Vec::new(),
+            frame,
+            has_flushed: false,
+        })
+    }
+
     pub(crate) fn output_pixel_formats(&self) -> &[OutputPixelFormat] {
         &self.output_pixel_formats
     }
@@ -184,27 +205,6 @@ impl VideoDecoder {
 
 impl Decoder for VideoDecoder {
     type Frame = ffmpeg::AVFrame;
-
-    fn create(
-        codec: &'static ffmpeg::AVCodec,
-        stream_info: StreamInfo,
-    ) -> Result<Self, error::FFmpegError> {
-        let base_decoder = BaseDecoder::create(codec, stream_info)?;
-
-        let frame = unsafe { ffmpeg::av_frame_alloc() };
-        if frame.is_null() {
-            return Err(error::FFmpegError::custom("unable to allocate frame"));
-        }
-
-        Ok(Self {
-            base_decoder,
-            accelerator: None,
-            filter: None,
-            output_pixel_formats: Vec::new(),
-            frame,
-            has_flushed: false,
-        })
-    }
 
     fn as_mut_ctx(&mut self) -> &mut ffmpeg::AVCodecContext {
         self.base_decoder.as_mut_ctx()

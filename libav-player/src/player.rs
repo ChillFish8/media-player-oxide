@@ -1,11 +1,12 @@
 use std::fmt::Formatter;
 use std::time::Duration;
 use std::{mem, ptr};
+use std::borrow::Cow;
 
 use rusty_ffmpeg::ffi as ffmpeg;
 
 use crate::codec::{AudioDecoder, Decoder, SubtitleDecoder, VideoDecoder};
-use crate::stream::{Fraction, StreamInfo};
+use crate::stream::StreamInfo;
 use crate::{
     AcceleratorConfig,
     InputSource,
@@ -775,11 +776,16 @@ pub struct SubtitleFrame {
 
 impl std::fmt::Debug for SubtitleFrame {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SubtitleFrame(format={:?})", self.format(),)
+        write!(
+            f,
+            "SubtitleFrame(format={:?})",
+            self.format(),
+        )
     }
 }
 
 impl SubtitleFrame {
+    /// The format of the subtitle data.
     pub fn format(&self) -> SubtitleFormat {
         SubtitleFormat::try_from_subtitle_format(
             self.inner.format as ffmpeg::AVSubtitleType,
@@ -789,8 +795,54 @@ impl SubtitleFrame {
 
     /// Returns the subtitle text content if it is
     /// in a text format.
-    pub fn text(&self) -> Option<String> {
-        todo!()
+    pub fn iter_text(&self) -> Option<impl Iterator<Item = Cow<'_, str>>> {
+        if self.format() != SubtitleFormat::Text {
+            return None;
+        }
+
+        let iter = self.raw_rectangles()
+            .iter()
+            .map(|rect| {
+                let str_view = unsafe { std::ffi::CStr::from_ptr((**rect).text) };
+                str_view.to_string_lossy()
+            });
+        Some(iter)
+    }
+
+    /// Returns the subtitle text content if it is
+    /// in a text format.
+    pub fn iter_ass(&self) -> Option<impl Iterator<Item = Cow<'_, str>>> {
+        if self.format() != SubtitleFormat::Ass {
+            return None;
+        }
+
+        let iter = self.raw_rectangles()
+            .iter()
+            .map(|rect| {
+                let str_view = unsafe { std::ffi::CStr::from_ptr((**rect).ass) };
+                str_view.to_string_lossy()
+            });
+        Some(iter)
+    }
+
+    /// Returns the subtitle content in bitmap form
+    /// if the format matches.
+    pub fn iter_bitmap(&self) -> Option<impl Iterator<Item = SubtitleBitmap<'_>>> {
+        if self.format() != SubtitleFormat::Bitmap {
+            return None;
+        }
+
+        let iter = self.raw_rectangles()
+            .iter()
+            .map(|rect| {
+                let rect = unsafe { &**rect };
+                SubtitleBitmap { rect }
+            });
+        Some(iter)
+    }
+
+    fn raw_rectangles(&self) -> &[*mut ffmpeg::AVSubtitleRect] {
+        unsafe { std::slice::from_raw_parts(self.inner.rects, self.inner.num_rects as usize) }
     }
 }
 
@@ -801,6 +853,27 @@ impl Frame for SubtitleFrame {
 
     fn is_hw_backed(&self) -> bool {
         false
+    }
+}
+
+/// Bitmap information for a given subtitle.
+pub struct SubtitleBitmap<'frame> {
+    rect: &'frame ffmpeg::AVSubtitleRect,
+}
+
+impl<'frame> SubtitleBitmap<'frame> {
+    /// Returns the width of the subtitle bitmap in pixels.
+    pub fn width(&self) -> usize {
+        self.rect.w as usize
+    }
+
+    /// Returns the height of the subtitle bitmap in pixels.
+    pub fn height(&self) -> usize {
+        self.rect.h as usize
+    }
+
+    pub fn render(&self) -> Result<(), error::FFmpegError> {
+        todo!()
     }
 }
 

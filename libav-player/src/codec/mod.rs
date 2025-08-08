@@ -44,12 +44,6 @@ pub(crate) trait Decoder: Sized {
     /// The frame type produced by the decoder;
     type Frame;
 
-    /// Create a new decoder using the target codec.
-    fn create(
-        codec: &'static ffmpeg::AVCodec,
-        stream_info: StreamInfo,
-    ) -> Result<Self, error::FFmpegError>;
-
     /// Return a mutable reference to the internal decoder context.
     fn as_mut_ctx(&mut self) -> &mut ffmpeg::AVCodecContext;
 
@@ -125,12 +119,8 @@ impl BaseDecoder {
         decoder.open()?;
         Ok(decoder)
     }
-}
 
-impl Decoder for BaseDecoder {
-    type Frame = ffmpeg::AVFrame;
-
-    fn create(
+    pub(super) fn create(
         codec: &'static ffmpeg::AVCodec,
         stream_info: StreamInfo,
     ) -> Result<Self, error::FFmpegError> {
@@ -154,6 +144,10 @@ impl Decoder for BaseDecoder {
 
         Ok(decoder)
     }
+}
+
+impl Decoder for BaseDecoder {
+    type Frame = ffmpeg::AVFrame;
 
     fn as_mut_ctx(&mut self) -> &mut ffmpeg::AVCodecContext {
         unsafe { &mut *self.ctx }

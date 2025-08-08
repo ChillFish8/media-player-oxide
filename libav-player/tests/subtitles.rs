@@ -4,7 +4,6 @@ use libav_player::{
     InputSource,
     MediaPlayerBuilder,
     MediaType,
-    OutputPixelFormat,
     PlayerError,
 };
 
@@ -35,6 +34,10 @@ fn test_subtitle_decode() -> anyhow::Result<()> {
         };
         frame_count += 1;
         assert!(!frame.is_hw_backed());
+
+        if let DecodedFrame::Subtitle(subtitle) = frame {
+            tracing::info!("subtitle: {:?}", subtitle);
+        }
     }
 
     dbg!(player.statistics(), frame_count);

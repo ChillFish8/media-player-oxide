@@ -38,6 +38,7 @@ impl std::fmt::Debug for StreamInfo {
             .field("media_type", &self.media_type)
             .field("index", &self.index)
             .field("framerate", &self.framerate)
+            .field("time_base", &self.time_base)
             .field("num_frames", &self.num_frames)
             .field("duration", &self.duration)
             .field("resolution", &self.resolution)
