@@ -130,7 +130,6 @@ impl BaseDecoder {
                 "failed to allocate codec context",
             ));
         }
-
         tracing::debug!("created decoder");
 
         let mut decoder = Self {
@@ -140,6 +139,8 @@ impl BaseDecoder {
         };
 
         let ctx = decoder.as_mut_ctx();
+        ctx.thread_count = 0;
+        ctx.thread_type = ffmpeg::FF_THREAD_FRAME as i32;
         ctx.time_base = stream_info.time_base.to_av_rational();
 
         Ok(decoder)
