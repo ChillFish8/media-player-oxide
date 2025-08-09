@@ -20,8 +20,8 @@ static DEFAULT_ACCELERATOR_AFFINITY: &[Accelerator] = &[
 /// in this list because it _is_ supported by Windows now but probably
 /// is not compiled into FFmpeg for most people.
 static DEFAULT_ACCELERATOR_AFFINITY: &[Accelerator] = &[
-    Accelerator::Direct3D12,
-    Accelerator::Direct3D12,
+    Accelerator::D3D12,
+    Accelerator::D3D11,
     Accelerator::Dxva2,
     Accelerator::Cuda,
     Accelerator::Vaapi,
