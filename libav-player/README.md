@@ -14,8 +14,7 @@ As the name implies this crate is powered by FFmpeg's libav libraries and expect
 - Minimal dependencies, you only need to link or distribute the libav libraries.
 - Simple state machine API, you dictate the pacing of retrieving frames, we just give you the frames
   themselves, you decide how to render them or process them.
-- Subtitles supported, however, we do not bake them into video frames for you.
-  * This means you must overlay them yourself and formats like ASS must be parsed and rendered by you.
+- Subtitles supported with automatic burn in via libass.
 
 ## Why this and not gstreamer or similar?
 

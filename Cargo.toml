@@ -1,3 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["libav-player", "wgpu-player-demo"]
+members = ["libav-player", "wgpu-player-toolkit", "wgpu-player-toolkit-demo"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+url = "2.5"
+rusty_ffmpeg = "0.16.3+ffmpeg.7.1"
+rstest = "0.26.1"
+tracing = "0.1.41"
+tracing-subscriber = "0.3"
+
+wgpu = { version = "26", default-features = false }
+
+libav-player = { path = "libav-player" }
