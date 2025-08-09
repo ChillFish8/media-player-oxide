@@ -26,8 +26,8 @@ By default, the system requires the `FFMPEG_INCLUDE_DIR` and `FFMPEG_PKG_CONFIG_
 if you are working on the library itself or this repo, you can drop one of the aforementioned releases
 into a `./ffmpeg` folder and the `.cargo/config.toml` is pre-configured to specify the required env vars.
 
-You can also enable the `link-system-ffmpeg` or `link-vcpkg-ffmpeg` flag to link to the FFmpeg headers and libs available from the
-system or vcpkg respectively.
+You can also enable the `link-system-ffmpeg` or `link-vcpkg-ffmpeg` flag  on the `libav-player` crate to link to 
+the FFmpeg headers and libs available from the system or vcpkg respectively.
 
 ## How it works
 
